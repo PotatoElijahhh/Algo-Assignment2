@@ -1,0 +1,14 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Generated images
+results/
+frames/
