@@ -12,6 +12,14 @@ The seam is found in three ways so they can be compared:
 | Greedy (row-by-row choice) | `src/seam_greedy.cpp` | In progress |
 | Graph cut (min-cut / max-flow) | `src/seam_graphcut.cpp` | In progress |
 
+It also includes two **improvements** to the dynamic-programming version (assignment item 5d),
+both of which give exactly the same result as the original:
+
+| Improvement | File | What it changes |
+|---|---|---|
+| Memory-light DP (`dp-compact`) | `src/seam_dp_improved.cpp` | Keeps only 2 rows of costs plus a 1-byte parent table instead of the full cost table, which is about 8x less memory |
+| Multithreading (`--threads`, `dp-parallel`) | `src/energy.cpp`, `src/seam_dp_improved.cpp` | Uses several CPU threads (OpenMP) for the energy map and for each row of the DP |
+
 ## How it works
 
 1. **Energy map** (`src/energy.cpp`): the Sobel gradient magnitude of the grayscale image.
@@ -58,13 +66,16 @@ The programs are written to:
 
 | Platform | Location |
 |---|---|
-| Windows (Visual Studio generator) | `build\Release\seamcarve.exe`, `build\Release\seam_tests.exe` |
-| Linux / macOS | `build/seamcarve`, `build/seam_tests` |
+| Windows (Visual Studio generator) | `build\Release\seamcarve.exe`, `build\Release\seambench.exe`, `build\Release\seam_tests.exe` |
+| Linux / macOS | `build/seamcarve`, `build/seambench`, `build/seam_tests` |
+
+Multithreading uses OpenMP, which comes with Visual Studio and GCC. If the compiler has no
+OpenMP (for example Apple Clang), everything still builds and simply runs on one thread.
 
 ## Running the program
 
 ```
-seamcarve <input> <output> [--width W] [--height H] [--method dp|greedy|graphcut]
+seamcarve <input> <output> [--width W] [--height H] [--method M] [--threads N]
 ```
 
 | Option | Meaning | Default |
@@ -73,7 +84,16 @@ seamcarve <input> <output> [--width W] [--height H] [--method dp|greedy|graphcut
 | `<output>` | Where to save the result (`.png`, `.jpg` or `.bmp`) | required |
 | `--width W` | Target width in pixels (must not be larger than the input) | keep current width |
 | `--height H` | Target height in pixels (must not be larger than the input) | keep current height |
-| `--method M` | Seam-finding method: `dp`, `greedy` or `graphcut` | `dp` |
+| `--method M` | Seam-finding method (see below) | `dp` |
+| `--threads N` | Number of CPU threads for the energy map, and for the DP with `dp-parallel` | `1` |
+
+| Method | Description |
+|---|---|
+| `dp` | Dynamic programming with the full cost table (original version) |
+| `dp-compact` | Memory-light dynamic programming, same result as `dp` |
+| `dp-parallel` | Memory-light dynamic programming with each row split across `--threads` threads, same result as `dp` |
+| `greedy` | Greedy row-by-row choice |
+| `graphcut` | Minimum cut / max-flow |
 
 The program only **shrinks** images, and the output folder must already exist.
 
@@ -98,7 +118,7 @@ mkdir -p results
 The program prints one line, for example:
 
 ```
-Carved 640x427 -> 400x300 using dp in 1873 ms
+Carved 640x427 -> 400x300 using dp (1 thread) in 1873 ms
 ```
 
 The resized image is saved to `results/tower_dp.png`. The sizes and time depend on your photo and
@@ -108,6 +128,41 @@ try it on small images (about 100x100) first.
 
 If something is wrong (missing file, target size larger than the image, unknown option), the
 program prints `Error: ...` with the reason, shows the usage text and exits with code 1.
+
+## Measuring the improvements (`seambench`)
+
+`seambench` measures the two DP improvements and checks that they give the same results as the
+original version:
+
+```
+seambench <image>    [--repeat R] [--seams K] [--max-threads T] [--csv FILE]
+seambench --size WxH [--repeat R] [--seams K] [--max-threads T] [--csv FILE]
+```
+
+| Option | Meaning | Default |
+|---|---|---|
+| `<image>` or `--size WxH` | A photo, or a random test image of the given size | required |
+| `--repeat R` | Runs to average in sections 1 and 2 | `5` |
+| `--seams K` | Vertical seams to remove in section 3 | `50` |
+| `--max-threads T` | Most threads to try | all available |
+| `--csv FILE` | Also save every result to a CSV file (for charts in Excel) | off |
+
+It prints three tables:
+
+1. **Energy map:** time with 1, 2, 4, ... threads, and the speed-up over 1 thread.
+2. **One seam:** the original DP, the memory-light DP and the multithreaded DP, with time,
+   speed-up and the memory used by the DP tables.
+3. **Full carve:** time to remove K seams with each configuration.
+
+The last column, `same result`, must say `yes` on every line.
+
+Example (Windows):
+
+```
+.\build\Release\seambench.exe images\tower.jpg --seams 50 --csv results\bench_tower.csv
+```
+
+Use a **Release** build for meaningful times, and close other heavy programs while it runs.
 
 ## Testing
 
@@ -163,6 +218,10 @@ If a check fails, the line is marked `[FAIL]` and the file and line number of th
 | carve keeps high-energy object | Seams go around a detailed object instead of through it |
 | carve rejects invalid targets | Sizes of 0 or larger than the image throw an error |
 | callback sees every seam | Every removed seam (vertical and horizontal) is reported, for visualisation |
+| compact DP matches original DP | The memory-light DP returns exactly the same seam as the original on 300 random grids, including ties |
+| parallel DP matches original DP | The multithreaded DP (4 threads) returns exactly the same seam as the original |
+| parallel energy matches serial | The multithreaded energy map is exactly equal to the single-threaded one |
+| all DP versions carve the same image | Carving with `dp`, `dp-compact` and `dp-parallel` gives identical images |
 
 ### Adding a test
 
@@ -179,8 +238,8 @@ tab and on each pull request. Only merge a pull request into `main` when both ch
 ## Project layout
 
 ```
-include/seam/   headers (Image, Matrix, energy, seam finders, carver)
-src/            implementation and the seamcarve command-line tool
+include/seam/   headers (Image, Matrix, energy, seam finders, carver, parallel)
+src/            implementation, the seamcarve tool (main.cpp) and seambench (bench.cpp)
 tests/          unit tests
 .github/        CI workflow
 ```
