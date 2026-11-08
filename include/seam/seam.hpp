@@ -12,7 +12,8 @@ using Seam = std::vector<int>;
 
 // Seam-finding strategies compared in this project.
 enum class Method {
-    DynamicProgramming,
+    DynamicProgramming,        // original DP with the full cost table
+    DynamicProgrammingCompact, // improvement: memory-light DP (same result)
     Greedy,
     GraphCut,
 };
@@ -28,6 +29,15 @@ Seam findVerticalSeam(const Matrix& energy, Method method);
 // The seam ends at the smallest entry of the last row and is traced back
 // upwards through the cheapest parent. Time O(rows * cols), space O(rows * cols).
 Seam findVerticalSeamDP(const Matrix& energy);
+
+// IMPROVEMENT (assignment item 5d, "do we need the entire DP table?"): memory-light DP.
+// Same recurrence, same tie-breaking and exactly the same seam as findVerticalSeamDP, but:
+//   - only two rows of costs are kept (the previous row and the current row), and
+//   - a 1-byte "parent" table remembers which pixel above (-1, 0 or +1) each cell came from,
+//     which is all the trace back needs.
+// Time O(rows * cols). Memory: 2 * cols doubles + rows * cols bytes, instead of
+// rows * cols doubles (8 bytes each), so roughly 8 times less.
+Seam findVerticalSeamDPCompact(const Matrix& energy);
 
 // Greedy: starts at the cheapest pixel of the top row, then in each row below
 // moves to the cheapest of the (up to) three touching pixels. Fast, but not

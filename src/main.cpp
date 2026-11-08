@@ -1,5 +1,5 @@
 // Command-line front end:
-//   seamcarve <input> <output> [--width W] [--height H] [--method dp|greedy|graphcut]
+//   seamcarve <input> <output> [--width W] [--height H] [--method dp|dp-compact|greedy|graphcut]
 
 #include "seam/carver.hpp"
 #include "seam/image.hpp"
@@ -12,15 +12,22 @@
 namespace {
 
 void printUsage() {
-    std::cerr << "Usage: seamcarve <input> <output> [--width W] [--height H] [--method dp|greedy|graphcut]\n"
+    std::cerr << "Usage: seamcarve <input> <output> [--width W] [--height H] [--method M]\n"
                  "  --width W    target width in pixels (default: keep current width)\n"
                  "  --height H   target height in pixels (default: keep current height)\n"
-                 "  --method M   seam-finding method (default: dp)\n";
+                 "  --method M   seam-finding method (default: dp):\n"
+                 "                 dp          dynamic programming, full cost table\n"
+                 "                 dp-compact  dynamic programming, memory-light (same result)\n"
+                 "                 greedy      greedy row-by-row choice\n"
+                 "                 graphcut    minimum cut / max-flow\n";
 }
 
 seam::Method parseMethod(const std::string& name) {
     if (name == "dp") {
         return seam::Method::DynamicProgramming;
+    }
+    if (name == "dp-compact") {
+        return seam::Method::DynamicProgrammingCompact;
     }
     if (name == "greedy") {
         return seam::Method::Greedy;
@@ -28,7 +35,7 @@ seam::Method parseMethod(const std::string& name) {
     if (name == "graphcut") {
         return seam::Method::GraphCut;
     }
-    throw std::invalid_argument("unknown method '" + name + "' (use dp, greedy or graphcut)");
+    throw std::invalid_argument("unknown method '" + name + "' (use dp, dp-compact, greedy or graphcut)");
 }
 
 } // namespace

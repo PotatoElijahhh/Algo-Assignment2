@@ -26,6 +26,7 @@ add_library(seamcore
     src/image.cpp
     src/energy.cpp
     src/seam_dp.cpp
+    src/seam_dp_improved.cpp
     src/seam_greedy.cpp
     src/seam_graphcut.cpp
     src/seam_method.cpp
