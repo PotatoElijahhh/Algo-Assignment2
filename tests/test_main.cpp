@@ -250,6 +250,48 @@ void testCallbackSeesEverySeam() {
     CHECK(g_seamsValid);
 }
 
+// ---------------------------------------------------------------- improvements (item 5d)
+// The improved versions must give exactly the same answers as the originals.
+
+void testCompactDpMatchesOriginalDp() {
+    // Integer energies 0-9 create many ties, which also checks the tie-breaking is the same.
+    std::mt19937 rng(2024);
+    for (int trial = 0; trial < 300; ++trial) {
+        const int rows = 1 + static_cast<int>(rng() % 40);
+        const int cols = 1 + static_cast<int>(rng() % 40);
+        const Matrix e = randomMatrix(rng, rows, cols);
+        CHECK(seam::findVerticalSeamDPCompact(e) == seam::findVerticalSeamDP(e));
+    }
+}
+
+void testParallelDpMatchesOriginalDp() {
+    std::mt19937 rng(77);
+    for (int trial = 0; trial < 100; ++trial) {
+        const int rows = 1 + static_cast<int>(rng() % 60);
+        const int cols = 1 + static_cast<int>(rng() % 200);
+        const Matrix e = randomMatrix(rng, rows, cols);
+        CHECK(seam::findVerticalSeamDPParallel(e, 4) == seam::findVerticalSeamDP(e));
+    }
+}
+
+void testParallelEnergyMatchesSerial() {
+    std::mt19937 rng(5);
+    const Image img = randomImage(rng, 64, 48);
+    const Matrix serial = seam::computeEnergy(img, 1);
+    const Matrix parallel = seam::computeEnergy(img, 4);
+    CHECK(parallel.values == serial.values); // exactly equal, not just close
+}
+
+void testAllDpVersionsCarveTheSameImage() {
+    std::mt19937 rng(11);
+    const Image img = randomImage(rng, 40, 30);
+    const Image original = seam::carve(img, 30, 24, seam::Method::DynamicProgramming);
+    const Image compact = seam::carve(img, 30, 24, seam::Method::DynamicProgrammingCompact);
+    const Image parallel = seam::carve(img, 30, 24, seam::Method::DynamicProgrammingParallel, {}, 4);
+    CHECK(compact.data == original.data);
+    CHECK(parallel.data == original.data);
+}
+
 } // namespace
 
 struct TestCase {
@@ -271,6 +313,10 @@ int main() {
         {"carve keeps high-energy object", testCarveKeepsHighEnergyObject},
         {"carve rejects invalid targets", testCarveRejectsInvalidTargets},
         {"callback sees every seam", testCallbackSeesEverySeam},
+        {"compact DP matches original DP", testCompactDpMatchesOriginalDp},
+        {"parallel DP matches original DP", testParallelDpMatchesOriginalDp},
+        {"parallel energy matches serial", testParallelEnergyMatchesSerial},
+        {"all DP versions carve the same image", testAllDpVersionsCarveTheSameImage},
     };
 
     for (const TestCase& test : tests) {
