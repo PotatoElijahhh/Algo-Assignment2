@@ -29,6 +29,7 @@ add_library(seamcore
     src/seam_greedy.cpp
     src/seam_graphcut.cpp
     src/seam_method.cpp
+    src/carver.cpp
 )
 target_include_directories(seamcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(seamcore PRIVATE stb)
