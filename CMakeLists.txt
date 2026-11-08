@@ -34,8 +34,14 @@ add_library(seamcore
 target_include_directories(seamcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(seamcore PRIVATE stb)
 
-if(MSVC)
-    target_compile_options(seamcore PRIVATE /W4)
-else()
-    target_compile_options(seamcore PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+# Command-line tool
+add_executable(seamcarve src/main.cpp)
+target_link_libraries(seamcarve PRIVATE seamcore)
+
+foreach(target seamcore seamcarve)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endforeach()
