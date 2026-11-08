@@ -5,7 +5,6 @@
 
 #include "seam/image.hpp"
 
-#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <stdexcept>
@@ -19,14 +18,16 @@ namespace seam {
 
 namespace {
 
+// Returns the file extension in lower case, e.g. "photo.JPG" -> "jpg".
 std::string lowerExtension(const std::string& path) {
-    const auto dot = path.find_last_of('.');
+    const std::size_t dot = path.find_last_of('.');
     if (dot == std::string::npos) {
         return "";
     }
     std::string ext = path.substr(dot + 1);
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (std::size_t i = 0; i < ext.size(); ++i) {
+        ext[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(ext[i])));
+    }
     return ext;
 }
 
