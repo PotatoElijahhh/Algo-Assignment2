@@ -14,12 +14,14 @@ using Seam = std::vector<int>;
 enum class Method {
     DynamicProgramming,        // original DP with the full cost table
     DynamicProgrammingCompact, // improvement: memory-light DP (same result)
+    DynamicProgrammingParallel, // improvement: memory-light DP, rows filled by several threads
     Greedy,
     GraphCut,
 };
 
 // Runs the chosen strategy. Every strategy takes an energy map and returns a vertical seam.
-Seam findVerticalSeam(const Matrix& energy, Method method);
+// `threads` is only used by Method::DynamicProgrammingParallel.
+Seam findVerticalSeam(const Matrix& energy, Method method, int threads = 1);
 
 // Finds the minimum-energy vertical seam with dynamic programming.
 //
@@ -38,6 +40,13 @@ Seam findVerticalSeamDP(const Matrix& energy);
 // Time O(rows * cols). Memory: 2 * cols doubles + rows * cols bytes, instead of
 // rows * cols doubles (8 bytes each), so roughly 8 times less.
 Seam findVerticalSeamDPCompact(const Matrix& energy);
+
+// IMPROVEMENT (assignment item 5d, "does multithreading help?"): multithreaded DP.
+// Same as findVerticalSeamDPCompact (same seam), but the cells of each row are computed by
+// `threads` threads at once. This works because a cell only depends on the row above it.
+// Rows must still be processed in order, so threads start and stop once per row; for
+// narrow images that overhead can cost more than it saves.
+Seam findVerticalSeamDPParallel(const Matrix& energy, int threads);
 
 // Greedy: starts at the cheapest pixel of the top row, then in each row below
 // moves to the cheapest of the (up to) three touching pixels. Fast, but not

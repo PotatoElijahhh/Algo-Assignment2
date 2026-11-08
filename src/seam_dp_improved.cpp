@@ -1,21 +1,31 @@
 // IMPROVEMENTS to the dynamic-programming seam finder (assignment item 5d).
 // The original version is in seam_dp.cpp; the versions here must always return the same seam.
+//
+//   findVerticalSeamDPCompact   memory-light DP (2 cost rows + 1-byte parent table), 1 thread
+//   findVerticalSeamDPParallel  the same memory-light DP, each row filled by several threads
 
 #include "seam/seam.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 namespace seam {
 
-Seam findVerticalSeamDPCompact(const Matrix& energy) {
+namespace {
+
+// Shared by both versions. threads == 1 runs a plain single-threaded loop.
+Seam compactDP(const Matrix& energy, int threads, const char* name) {
     const int rows = energy.rows;
     const int cols = energy.cols;
     if (rows <= 0 || cols <= 0) {
-        throw std::invalid_argument("findVerticalSeamDPCompact: energy map is empty");
+        throw std::invalid_argument(std::string(name) + ": energy map is empty");
+    }
+    if (threads < 1) {
+        threads = 1;
     }
 
     // The recurrence only ever looks one row up, so two rows of costs are enough:
@@ -32,6 +42,12 @@ Seam findVerticalSeamDPCompact(const Matrix& energy) {
     }
 
     for (int i = 1; i < rows; ++i) {
+        // MULTITHREADING: the cells of one row only read the previous row, so they can be
+        // computed at the same time by different threads. The rows themselves must still be
+        // done one after another, so the threads start and finish once per row.
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(threads) if (threads > 1)
+#endif
         for (int j = 0; j < cols; ++j) {
             // Same tie-breaking as findVerticalSeamDP: straight up, then left, then right.
             int best = j;
@@ -63,6 +79,16 @@ Seam findVerticalSeamDPCompact(const Matrix& energy) {
         seam[i - 1] = col;
     }
     return seam;
+}
+
+} // namespace
+
+Seam findVerticalSeamDPCompact(const Matrix& energy) {
+    return compactDP(energy, 1, "findVerticalSeamDPCompact");
+}
+
+Seam findVerticalSeamDPParallel(const Matrix& energy, int threads) {
+    return compactDP(energy, threads, "findVerticalSeamDPParallel");
 }
 
 } // namespace seam

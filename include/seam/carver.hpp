@@ -26,8 +26,8 @@ void removeVerticalSeam(Image& img, const Seam& seam);
 //   3. removing it.
 // Vertical seams are removed first. Horizontal seams are removed as vertical
 // seams of the transposed image. Targets must be between 1 and the current size.
-// `threads` (default 1) is the number of threads used to compute the energy map.
-// The output does not depend on it.
+// `threads` (default 1) is the number of threads used to compute the energy map and,
+// for Method::DynamicProgrammingParallel, the DP. The output does not depend on it.
 Image carve(const Image& input, int targetWidth, int targetHeight, Method method,
             const SeamCallback& onSeam = {}, int threads = 1);
 

@@ -43,7 +43,7 @@ void removeSeamsUntil(Image& img, int targetWidth, Method method, const SeamCall
                       bool transposed, int threads) {
     while (img.width > targetWidth) {
         const Matrix energy = computeEnergy(img, threads);
-        const Seam seam = findVerticalSeam(energy, method);
+        const Seam seam = findVerticalSeam(energy, method, threads);
         if (onSeam) {
             if (transposed) {
                 onSeam(transpose(img), seam, Orientation::Horizontal);

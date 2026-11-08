@@ -1,5 +1,5 @@
 // Command-line front end:
-//   seamcarve <input> <output> [--width W] [--height H] [--method dp|dp-compact|greedy|graphcut]
+//   seamcarve <input> <output> [--width W] [--height H] [--method M] [--threads N]
 
 #include "seam/carver.hpp"
 #include "seam/image.hpp"
@@ -19,9 +19,11 @@ void printUsage() {
                  "  --method M   seam-finding method (default: dp):\n"
                  "                 dp          dynamic programming, full cost table\n"
                  "                 dp-compact  dynamic programming, memory-light (same result)\n"
+                 "                 dp-parallel memory-light DP with each row split across threads\n"
                  "                 greedy      greedy row-by-row choice\n"
                  "                 graphcut    minimum cut / max-flow\n"
-                 "  --threads N  number of threads for the energy map (default: 1)\n";
+                 "  --threads N  number of threads for the energy map, and for the DP with\n"
+                 "               dp-parallel (default: 1)\n";
 }
 
 seam::Method parseMethod(const std::string& name) {
@@ -31,13 +33,16 @@ seam::Method parseMethod(const std::string& name) {
     if (name == "dp-compact") {
         return seam::Method::DynamicProgrammingCompact;
     }
+    if (name == "dp-parallel") {
+        return seam::Method::DynamicProgrammingParallel;
+    }
     if (name == "greedy") {
         return seam::Method::Greedy;
     }
     if (name == "graphcut") {
         return seam::Method::GraphCut;
     }
-    throw std::invalid_argument("unknown method '" + name + "' (use dp, dp-compact, greedy or graphcut)");
+    throw std::invalid_argument("unknown method '" + name + "' (use dp, dp-compact, dp-parallel, greedy or graphcut)");
 }
 
 } // namespace
