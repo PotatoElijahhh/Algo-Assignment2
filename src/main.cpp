@@ -3,6 +3,7 @@
 
 #include "seam/carver.hpp"
 #include "seam/image.hpp"
+#include "seam/parallel.hpp"
 
 #include <chrono>
 #include <exception>
@@ -19,7 +20,8 @@ void printUsage() {
                  "                 dp          dynamic programming, full cost table\n"
                  "                 dp-compact  dynamic programming, memory-light (same result)\n"
                  "                 greedy      greedy row-by-row choice\n"
-                 "                 graphcut    minimum cut / max-flow\n";
+                 "                 graphcut    minimum cut / max-flow\n"
+                 "  --threads N  number of threads for the energy map (default: 1)\n";
 }
 
 seam::Method parseMethod(const std::string& name) {
@@ -52,6 +54,7 @@ int main(int argc, char** argv) {
         int targetWidth = -1;
         int targetHeight = -1;
         std::string methodName = "dp";
+        int threads = 1;
 
         for (int i = 3; i < argc; ++i) {
             const std::string arg = argv[i];
@@ -65,12 +68,21 @@ int main(int argc, char** argv) {
                 targetHeight = std::stoi(value);
             } else if (arg == "--method") {
                 methodName = value;
+            } else if (arg == "--threads") {
+                threads = std::stoi(value);
             } else {
                 throw std::invalid_argument("unknown option " + arg);
             }
         }
 
         const seam::Method method = parseMethod(methodName);
+        if (threads < 1) {
+            throw std::invalid_argument("--threads must be at least 1");
+        }
+        if (threads > 1 && !seam::hasOpenMP()) {
+            std::cout << "Note: built without OpenMP, so running on 1 thread\n";
+            threads = 1;
+        }
         const seam::Image input = seam::loadImage(inputPath);
         if (targetWidth < 0) {
             targetWidth = input.width;
@@ -80,13 +92,14 @@ int main(int argc, char** argv) {
         }
 
         const auto start = std::chrono::steady_clock::now();
-        const seam::Image output = seam::carve(input, targetWidth, targetHeight, method);
+        const seam::Image output = seam::carve(input, targetWidth, targetHeight, method, {}, threads);
         const auto end = std::chrono::steady_clock::now();
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
         seam::saveImage(output, outputPath);
         std::cout << "Carved " << input.width << "x" << input.height << " -> " << output.width << "x"
-                  << output.height << " using " << methodName << " in " << ms << " ms\n";
+                  << output.height << " using " << methodName << " (" << threads << " thread"
+                  << (threads == 1 ? "" : "s") << ") in " << ms << " ms\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";

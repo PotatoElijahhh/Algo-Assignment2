@@ -31,9 +31,17 @@ add_library(seamcore
     src/seam_graphcut.cpp
     src/seam_method.cpp
     src/carver.cpp
+    src/parallel.cpp
 )
 target_include_directories(seamcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(seamcore PRIVATE stb)
+
+# Multithreading (assignment item 5d). If the compiler has no OpenMP, the code still
+# builds and simply runs on one thread.
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(seamcore PUBLIC OpenMP::OpenMP_CXX)
+endif()
 
 # Command-line tool
 add_executable(seamcarve src/main.cpp)

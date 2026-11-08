@@ -7,8 +7,18 @@ namespace seam {
 
 namespace {
 
-Matrix toGrayscale(const Image& img) {
+// 3x3 Sobel kernels for the horizontal (gx) and vertical (gy) gradients.
+const int kSobelX[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
+const int kSobelY[3][3] = {{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}};
+
+Matrix toGrayscale(const Image& img, int threads) {
     Matrix gray(img.height, img.width);
+
+    // MULTITHREADING: each thread converts a different set of rows.
+    // (The pragma is ignored when OpenMP is off, and `if` keeps one thread when threads == 1.)
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(threads) if (threads > 1)
+#endif
     for (int row = 0; row < img.height; ++row) {
         for (int col = 0; col < img.width; ++col) {
             const std::uint8_t* p = img.pixel(row, col);
@@ -20,14 +30,18 @@ Matrix toGrayscale(const Image& img) {
 
 } // namespace
 
-Matrix computeEnergy(const Image& img) {
-    const Matrix gray = toGrayscale(img);
+Matrix computeEnergy(const Image& img, int threads) {
+    if (threads < 1) {
+        threads = 1;
+    }
+    const Matrix gray = toGrayscale(img, threads);
     Matrix energy(img.height, img.width);
 
-    // 3x3 Sobel kernels for the horizontal (gx) and vertical (gy) gradients.
-    static const int kx[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
-    static const int ky[3][3] = {{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}};
-
+    // MULTITHREADING: each thread computes the energy of a different set of rows.
+    // Safe because every thread only reads `gray` and writes its own rows of `energy`.
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(threads) if (threads > 1)
+#endif
     for (int row = 0; row < img.height; ++row) {
         for (int col = 0; col < img.width; ++col) {
             double gx = 0.0;
@@ -37,8 +51,8 @@ Matrix computeEnergy(const Image& img) {
                 for (int dc = -1; dc <= 1; ++dc) {
                     const int c = std::clamp(col + dc, 0, img.width - 1);
                     const double v = gray(r, c);
-                    gx += kx[dr + 1][dc + 1] * v;
-                    gy += ky[dr + 1][dc + 1] * v;
+                    gx += kSobelX[dr + 1][dc + 1] * v;
+                    gy += kSobelY[dr + 1][dc + 1] * v;
                 }
             }
             energy(row, col) = std::sqrt(gx * gx + gy * gy);

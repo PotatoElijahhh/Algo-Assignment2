@@ -40,9 +40,9 @@ namespace {
 // When `transposed` is true, img is the transpose of the real image, so the
 // callback gets the image transposed back and the seam labelled horizontal.
 void removeSeamsUntil(Image& img, int targetWidth, Method method, const SeamCallback& onSeam,
-                      bool transposed) {
+                      bool transposed, int threads) {
     while (img.width > targetWidth) {
-        const Matrix energy = computeEnergy(img);
+        const Matrix energy = computeEnergy(img, threads);
         const Seam seam = findVerticalSeam(energy, method);
         if (onSeam) {
             if (transposed) {
@@ -58,7 +58,7 @@ void removeSeamsUntil(Image& img, int targetWidth, Method method, const SeamCall
 } // namespace
 
 Image carve(const Image& input, int targetWidth, int targetHeight, Method method,
-            const SeamCallback& onSeam) {
+            const SeamCallback& onSeam, int threads) {
     if (targetWidth < 1 || targetWidth > input.width || targetHeight < 1 || targetHeight > input.height) {
         throw std::invalid_argument("carve: target size " + std::to_string(targetWidth) + "x" +
                                     std::to_string(targetHeight) + " must be between 1x1 and " +
@@ -66,11 +66,11 @@ Image carve(const Image& input, int targetWidth, int targetHeight, Method method
     }
 
     Image img = input;
-    removeSeamsUntil(img, targetWidth, method, onSeam, false);
+    removeSeamsUntil(img, targetWidth, method, onSeam, false, threads);
 
     if (img.height > targetHeight) {
         img = transpose(img);
-        removeSeamsUntil(img, targetHeight, method, onSeam, true);
+        removeSeamsUntil(img, targetHeight, method, onSeam, true, threads);
         img = transpose(img);
     }
     return img;
