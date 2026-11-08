@@ -47,13 +47,17 @@ endif()
 add_executable(seamcarve src/main.cpp)
 target_link_libraries(seamcarve PRIVATE seamcore)
 
+# Benchmark tool for the DP improvements (assignment item 5d)
+add_executable(seambench src/bench.cpp)
+target_link_libraries(seambench PRIVATE seamcore)
+
 # Unit tests (run with: ctest --test-dir build -C Release)
 enable_testing()
 add_executable(seam_tests tests/test_main.cpp)
 target_link_libraries(seam_tests PRIVATE seamcore)
 add_test(NAME seam_tests COMMAND seam_tests)
 
-foreach(target seamcore seamcarve seam_tests)
+foreach(target seamcore seamcarve seambench seam_tests)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4)
     else()
