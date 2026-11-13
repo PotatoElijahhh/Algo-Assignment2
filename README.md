@@ -20,6 +20,11 @@ both of which give exactly the same result as the original:
 | Memory-light DP (`dp-compact`) | `src/seam_dp_improved.cpp` | Keeps only 2 rows of costs plus a 1-byte parent table instead of the full cost table, which is about 8x less memory |
 | Multithreading (`--threads`, `dp-parallel`) | `src/energy.cpp`, `src/seam_dp_improved.cpp` | Uses several CPU threads (OpenMP) for the energy map and for each row of the DP |
 
+It also has **visualisation and interactive resizing** (bonus items 7a and 7b): step-by-step
+frames, all removed seams drawn on the original image, a console mode that keeps asking for new
+sizes, and an optional window with width/height sliders. See
+[Visualisation and interactive resizing](#visualisation-and-interactive-resizing-bonus).
+
 ## How it works
 
 1. **Energy map** (`src/energy.cpp`): the Sobel gradient magnitude of the grayscale image.
@@ -76,6 +81,7 @@ OpenMP (for example Apple Clang), everything still builds and simply runs on one
 
 ```
 seamcarve <input> <output> [--width W] [--height H] [--method M] [--threads N]
+          [--frames DIR] [--frame-every N] [--overlay FILE] [--interactive]
 ```
 
 | Option | Meaning | Default |
@@ -86,6 +92,10 @@ seamcarve <input> <output> [--width W] [--height H] [--method M] [--threads N]
 | `--height H` | Target height in pixels (must not be larger than the input) | keep current height |
 | `--method M` | Seam-finding method (see below) | `dp` |
 | `--threads N` | Number of CPU threads for the energy map, and for the DP with `dp-parallel` | `1` |
+| `--frames DIR` | Save a PNG of every step into folder `DIR` (see below) | off |
+| `--frame-every N` | With `--frames`, only save every N-th seam | `1` |
+| `--overlay FILE` | Save the original image with every removed seam painted | off |
+| `--interactive` | Keep asking for new sizes instead of using `--width`/`--height` | off |
 
 | Method | Description |
 |---|---|
@@ -128,6 +138,84 @@ try it on small images (about 100x100) first.
 
 If something is wrong (missing file, target size larger than the image, unknown option), the
 program prints `Error: ...` with the reason, shows the usage text and exits with code 1.
+
+## Visualisation and interactive resizing (bonus)
+
+All of this lives in `src/visualise.cpp`, `src/interactive.cpp`, `src/seam_order.cpp` and
+`src/gui_main.cpp`. It uses the callback that `carve()` calls just before removing each seam, so
+it works with every seam-finding method and never changes the result.
+
+### Step-by-step frames (`--frames`)
+
+```
+seamcarve images/balloon.jpg results/balloon_small.png --width 380 --height 280 --frames frames --frame-every 10
+```
+
+Saves `frames/frame_0001_v.png`, `frame_0011_v.png`, ..., `frame_0345_final.png`. Each frame is the
+image just before a seam is removed, with that seam painted **red** (vertical) or **blue**
+(horizontal). Frames are padded with dark grey to the original size, so they line up when played
+as an animation. The last frame is the finished result. Leave out `--frame-every` to save every
+seam. (`frames/` is ignored by Git.)
+
+### All seams on the original image (`--overlay`)
+
+```
+seamcarve images/balloon.jpg results/balloon_small.png --width 380 --height 280 --overlay results/balloon_overlay.png
+```
+
+Saves the **original** image with every removed pixel painted: red = removed by a vertical seam,
+blue = removed by a horizontal seam. After a few seams the pixels have shifted, so `SeamTracker`
+keeps the original position of every remaining pixel and removes the same entries each time a
+seam is removed (O(W·H) per seam, the same as removing the seam itself). `--frames` and
+`--overlay` can be used together.
+
+### Interactive console mode (`--interactive`)
+
+```
+seamcarve images/balloon.jpg results/balloon.png --interactive
+```
+
+```
+Interactive mode. Original size: 640x364
+> 500 300
+Carved to 500x300 in 548 ms, saved results/balloon_500x300.png
+> 380
+Carved to 380x364 in 572 ms, saved results/balloon_380x364.png
+> q
+Saved 2 images.
+```
+
+Type `W H`, just `W` (keeps the height) or `q`. Every size is carved from the **original**, so sizes
+can be tried in any order, and each one is saved as `<output>_WxH`. A size that is too big or
+input that is not a number prints a message and asks again.
+
+### Slider window (`seamgui`, optional)
+
+A window with **width and height sliders that update instantly**, a "show removed seams" switch,
+a method choice and a Save button. It needs Dear ImGui and GLFW, so it is **off by default**;
+normal builds and CI do not download or build it.
+
+**Turn it on in Visual Studio:** **Project → CMake Settings**, select **x64-Release**, tick
+`SEAM_BUILD_GUI` under *CMake variables and cache* (or set *CMake command arguments* to
+`-DSEAM_BUILD_GUI=ON`), save, then build. **Command line:**
+
+```
+cmake -S . -B build -DSEAM_BUILD_GUI=ON
+cmake --build build --config Release
+```
+
+Run it with `seamgui <input> <output>`; **Save** writes `<output>_WxH`. On Linux the X11 and
+OpenGL development packages are needed (e.g. `libx11-dev libxrandr-dev libxinerama-dev
+libxcursor-dev libxi-dev libgl-dev`).
+
+**Why the sliders are instant:** carving to width w always removes the *first* W − w seams of
+the same sequence, because each step removes the current cheapest seam whatever the target is.
+So when the image is opened, the program carves once all the way down in a background thread
+and records, for every pixel, the step at which it was removed (`computeVerticalSeamOrder`,
+the "multi-size image" idea from Avidan & Shamir). Any width is then "keep every pixel removed
+after step W − w", which is O(W·H) with no energy map or DP. When the width slider is released,
+the same is done for horizontal seams at that width, and the height slider becomes instant too.
+The tests check that this gives exactly the same pixels as `carve()` for every size.
 
 ## Measuring the improvements (`seambench`)
 
@@ -222,6 +310,25 @@ If a check fails, the line is marked `[FAIL]` and the file and line number of th
 | parallel DP matches original DP | The multithreaded DP (4 threads) returns exactly the same seam as the original |
 | parallel energy matches serial | The multithreaded energy map is exactly equal to the single-threaded one |
 | all DP versions carve the same image | Carving with `dp`, `dp-compact` and `dp-parallel` gives identical images |
+| paint vertical / horizontal seam | Exactly the seam's pixels change colour, nothing else |
+| paint seam rejects bad seams | Seams of the wrong length, with jumps or out of range are rejected |
+| paint every seam from carve | Every seam `carve()` reports can be painted, one pixel per row (or column) |
+| pad to size | Frames are placed top-left on a background of the original size |
+| frame recorder saves every N-th seam | With `--frame-every 2`, exactly frames 1, 3, 5 and the final one are saved, all at the original size |
+| frame recorder rejects bad 'every' | `--frame-every 0` is rejected |
+| first frame shows the first seam | The red pixels of the first saved PNG are exactly the DP seam of the original image |
+| tracker follows every pixel | After carving, every pixel of the result equals the original pixel `SeamTracker` says it came from (4 sizes) |
+| tracker counts removed pixels | Removed pixels = W·H − w·h, and no pixel is removed twice |
+| overlay colours removed pixels | The overlay has exactly (removed columns × H) red, (removed rows × w) blue and w·h unchanged pixels |
+| tracker rejects wrong size | Recording a seam for an image of the wrong size throws |
+| output name for size | `results/balloon.png` at 300x200 is saved as `results/balloon_300x200.png` |
+| interactive carves each request | A scripted session saves the right sizes, with the same pixels as `carve()` |
+| interactive keeps going after bad input | Junk input and out-of-range sizes print a message and the loop continues |
+| vertical order matches carve | Resizing with the precomputed seam order equals `carve()` for **every** width |
+| order has one pixel per row per step | Each vertical seam removes exactly one pixel in every row |
+| width then height order matches carve | The same for width + height combinations (what the slider window does) |
+| paint removed pixels matches tracker | The window's live seam picture equals the `--overlay` picture |
+| seam order progress and range | Progress is reported once per seam, and widths outside the computed range are rejected |
 
 ### Adding a test
 
@@ -238,8 +345,10 @@ tab and on each pull request. Only merge a pull request into `main` when both ch
 ## Project layout
 
 ```
-include/seam/   headers (Image, Matrix, energy, seam finders, carver, parallel)
-src/            implementation, the seamcarve tool (main.cpp) and seambench (bench.cpp)
+include/seam/   headers (Image, Matrix, energy, seam finders, carver, parallel, visualise,
+                interactive, seam_order)
+src/            implementation, the seamcarve tool (main.cpp), seambench (bench.cpp) and the
+                optional slider window (gui_main.cpp)
 tests/          unit tests
 .github/        CI workflow
 ```
@@ -251,3 +360,4 @@ tests/          unit tests
 - [Seam carving (Wikipedia)](https://en.wikipedia.org/wiki/Seam_carving)
 - [Real-world dynamic programming: seam carving (Avik Das)](https://avikdas.com/2019/05/14/real-world-dynamic-programming-seam-carving.html)
 - [stb single-file libraries](https://github.com/nothings/stb), used for reading and writing image files
+- [Dear ImGui](https://github.com/ocornut/imgui) and [GLFW](https://www.glfw.org/), used only by the optional slider window
