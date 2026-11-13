@@ -8,6 +8,8 @@ cmake-build-*/
 .vscode/
 .idea/
 *.user
+CMakeSettings.json
+CMakeUserPresets.json
 
 # Generated images
 results/
