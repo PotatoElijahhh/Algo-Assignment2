@@ -6,6 +6,7 @@
 #include "seam/image.hpp"
 #include "seam/interactive.hpp"
 #include "seam/seam.hpp"
+#include "seam/seam_order.hpp"
 #include "seam/visualise.hpp"
 
 #include <algorithm>
@@ -643,6 +644,102 @@ void testInteractiveKeepsGoingAfterBadInput() {
     std::filesystem::remove_all(folder);
 }
 
+// ---------------------------------------------------------------- seam order maps (GUI, bonus 7b)
+
+void testVerticalOrderMatchesCarve() {
+    // The key check: resizing with the precomputed order gives EXACTLY carve()'s pixels,
+    // for every width the order covers.
+    std::mt19937 rng(51);
+    const Image img = randomImage(rng, 18, 11);
+    const seam::SeamOrder order = seam::computeVerticalSeamOrder(img, 1, seam::Method::DynamicProgramming);
+    CHECK(order.seamCount == 17);
+    bool allMatch = true;
+    for (int w = 1; w <= img.width; ++w) {
+        const Image fast = seam::applyVerticalOrder(img, order, w);
+        const Image slow = seam::carve(img, w, img.height, seam::Method::DynamicProgramming);
+        allMatch = allMatch && fast.width == w && fast.data == slow.data;
+    }
+    CHECK(allMatch);
+}
+
+void testOrderHasOnePixelPerRowPerStep() {
+    // Each vertical seam removes exactly one pixel per row, so in every row each step
+    // 1..seamCount appears once, and the remaining (minWidth) pixels have step 0.
+    std::mt19937 rng(52);
+    const Image img = randomImage(rng, 14, 9);
+    const seam::SeamOrder order = seam::computeVerticalSeamOrder(img, 4, seam::Method::DynamicProgramming);
+    bool ok = true;
+    for (int row = 0; row < img.height; ++row) {
+        std::vector<int> seen(order.seamCount + 1, 0);
+        for (int col = 0; col < img.width; ++col) {
+            ++seen[static_cast<std::size_t>(order.at(row, col))];
+        }
+        ok = ok && seen[0] == 4; // 4 pixels never removed
+        for (int k = 1; k <= order.seamCount; ++k) {
+            ok = ok && seen[static_cast<std::size_t>(k)] == 1;
+        }
+    }
+    CHECK(ok);
+}
+
+void testWidthThenHeightOrderMatchesCarve() {
+    // What the GUI does: the vertical order gives the width; then a horizontal order computed
+    // on that narrower image gives the height. Must equal carve(img, w, h).
+    std::mt19937 rng(53);
+    const Image img = randomImage(rng, 16, 13);
+    const seam::SeamOrder vertical = seam::computeVerticalSeamOrder(img, 1, seam::Method::DynamicProgramming);
+    bool allMatch = true;
+    for (int w : {16, 12, 7}) {
+        const Image narrow = seam::applyVerticalOrder(img, vertical, w);
+        const seam::SeamOrder horizontal =
+            seam::computeHorizontalSeamOrder(narrow, 1, seam::Method::DynamicProgramming);
+        for (int h : {13, 10, 4, 1}) {
+            const Image fast = seam::applyHorizontalOrder(narrow, horizontal, h);
+            const Image slow = seam::carve(img, w, h, seam::Method::DynamicProgramming);
+            allMatch = allMatch && fast.width == w && fast.height == h && fast.data == slow.data;
+        }
+    }
+    CHECK(allMatch);
+}
+
+void testPaintRemovedPixelsMatchesTracker() {
+    // The GUI's live "show seams" picture must be the same as the Step 3 overlay.
+    std::mt19937 rng(54);
+    const Image img = randomImage(rng, 15, 12);
+    const int w = 10;
+    const int h = 8;
+    const seam::SeamOrder vertical = seam::computeVerticalSeamOrder(img, 1, seam::Method::DynamicProgramming);
+    const Image narrow = seam::applyVerticalOrder(img, vertical, w);
+    const seam::SeamOrder horizontal = seam::computeHorizontalSeamOrder(narrow, 1, seam::Method::DynamicProgramming);
+
+    seam::SeamTracker tracker(img);
+    carveWithTracker(img, w, h, tracker);
+    CHECK(seam::paintRemovedPixels(img, vertical, w, horizontal, h).data == tracker.overlay().data);
+}
+
+void testSeamOrderProgressAndRange() {
+    std::mt19937 rng(55);
+    const Image img = randomImage(rng, 10, 6);
+    int calls = 0;
+    int lastDone = 0;
+    const seam::SeamOrder order = seam::computeVerticalSeamOrder(
+        img, 6, seam::Method::DynamicProgramming, 1, [&calls, &lastDone](int done, int total) {
+            ++calls;
+            lastDone = done;
+            CHECK(total == 4);
+        });
+    CHECK(calls == 4 && lastDone == 4);
+
+    // Widths below 6 were never computed, so they must be rejected.
+    bool threw = false;
+    try {
+        seam::applyVerticalOrder(img, order, 5);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 } // namespace
 
 struct TestCase {
@@ -683,6 +780,11 @@ int main() {
         {"output name for size", testOutputNameForSize},
         {"interactive carves each request", testInteractiveCarvesEachRequest},
         {"interactive keeps going after bad input", testInteractiveKeepsGoingAfterBadInput},
+        {"vertical order matches carve", testVerticalOrderMatchesCarve},
+        {"order has one pixel per row per step", testOrderHasOnePixelPerRowPerStep},
+        {"width then height order matches carve", testWidthThenHeightOrderMatchesCarve},
+        {"paint removed pixels matches tracker", testPaintRemovedPixelsMatchesTracker},
+        {"seam order progress and range", testSeamOrderProgressAndRange},
     };
 
     for (const TestCase& test : tests) {
