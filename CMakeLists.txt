@@ -32,6 +32,7 @@ add_library(seamcore
     src/seam_method.cpp
     src/carver.cpp
     src/parallel.cpp
+    src/visualise.cpp
 )
 target_include_directories(seamcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(seamcore PRIVATE stb)

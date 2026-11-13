@@ -5,12 +5,15 @@
 #include "seam/energy.hpp"
 #include "seam/image.hpp"
 #include "seam/seam.hpp"
+#include "seam/visualise.hpp"
 
 #include <algorithm>
 #include <iostream>
 #include <limits>
 #include <random>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -292,6 +295,99 @@ void testAllDpVersionsCarveTheSameImage() {
     CHECK(parallel.data == original.data);
 }
 
+// ---------------------------------------------------------------- visualisation (bonus 7a)
+
+// True if pixel (row, col) has exactly the colour c.
+bool hasColour(const Image& img, int row, int col, seam::Colour c) {
+    const std::uint8_t* p = img.pixel(row, col);
+    return p[0] == c.r && p[1] == c.g && p[2] == c.b;
+}
+
+// Counts the pixels that differ between two images of the same size.
+int countChangedPixels(const Image& a, const Image& b) {
+    int changed = 0;
+    for (int row = 0; row < a.height; ++row) {
+        for (int col = 0; col < a.width; ++col) {
+            const std::uint8_t* p = a.pixel(row, col);
+            const std::uint8_t* q = b.pixel(row, col);
+            if (p[0] != q[0] || p[1] != q[1] || p[2] != q[2]) {
+                ++changed;
+            }
+        }
+    }
+    return changed;
+}
+
+void testPaintVerticalSeam() {
+    Image img(4, 3); // 4 wide, 3 tall
+    fillRect(img, 0, 4, 0, 3, 50);
+    const Image before = img;
+    const Seam s = {1, 2, 1}; // one column per row
+
+    seam::paintSeam(img, s, seam::Orientation::Vertical, seam::kRed);
+
+    CHECK(hasColour(img, 0, 1, seam::kRed));
+    CHECK(hasColour(img, 1, 2, seam::kRed));
+    CHECK(hasColour(img, 2, 1, seam::kRed));
+    CHECK(countChangedPixels(before, img) == 3); // only the seam pixels changed
+}
+
+void testPaintHorizontalSeam() {
+    Image img(4, 3); // 4 wide, 3 tall
+    fillRect(img, 0, 4, 0, 3, 50);
+    const Image before = img;
+    const Seam s = {0, 1, 2, 2}; // one row per column
+
+    seam::paintSeam(img, s, seam::Orientation::Horizontal, seam::kBlue);
+
+    CHECK(hasColour(img, 0, 0, seam::kBlue));
+    CHECK(hasColour(img, 1, 1, seam::kBlue));
+    CHECK(hasColour(img, 2, 2, seam::kBlue));
+    CHECK(hasColour(img, 2, 3, seam::kBlue));
+    CHECK(countChangedPixels(before, img) == 4);
+}
+
+void testPaintSeamRejectsBadSeams() {
+    Image img(4, 3);
+    // Each entry is an invalid seam; painting any of them must throw.
+    const std::vector<std::pair<Seam, seam::Orientation>> bad = {
+        {{1, 2}, seam::Orientation::Vertical},          // too short (needs 3 rows)
+        {{0, 2, 1}, seam::Orientation::Vertical},       // jumps two columns
+        {{1, 4, 3}, seam::Orientation::Vertical},       // column 4 is out of range
+        {{0, 1, 2}, seam::Orientation::Horizontal},     // too short (needs 4 columns)
+        {{0, 1, 2, 3}, seam::Orientation::Horizontal},  // row 3 is out of range
+    };
+    for (const auto& entry : bad) {
+        bool threw = false;
+        try {
+            seam::paintSeam(img, entry.first, entry.second, seam::kRed);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        CHECK(threw);
+    }
+}
+
+// Every seam carve() reports can be painted, and exactly one pixel per row (vertical)
+// or per column (horizontal) changes colour.
+void testPaintEverySeamFromCarve() {
+    std::mt19937 rng(8);
+    const Image img = randomImage(rng, 20, 15);
+    bool allOk = true;
+    seam::carve(img, 14, 10, seam::Method::DynamicProgramming,
+                [&allOk](const Image& current, const Seam& s, seam::Orientation orientation) {
+                    // Paint on an all-black copy, so every seam pixel is guaranteed to change.
+                    Image painted = current;
+                    fillRect(painted, 0, painted.width, 0, painted.height, 0);
+                    const Image black = painted;
+                    seam::paintSeam(painted, s, orientation, seam::Colour{0, 255, 0});
+                    const int expected =
+                        orientation == seam::Orientation::Vertical ? current.height : current.width;
+                    allOk = allOk && countChangedPixels(black, painted) == expected;
+                });
+    CHECK(allOk);
+}
+
 } // namespace
 
 struct TestCase {
@@ -317,6 +413,10 @@ int main() {
         {"parallel DP matches original DP", testParallelDpMatchesOriginalDp},
         {"parallel energy matches serial", testParallelEnergyMatchesSerial},
         {"all DP versions carve the same image", testAllDpVersionsCarveTheSameImage},
+        {"paint vertical seam", testPaintVerticalSeam},
+        {"paint horizontal seam", testPaintHorizontalSeam},
+        {"paint seam rejects bad seams", testPaintSeamRejectsBadSeams},
+        {"paint every seam from carve", testPaintEverySeamFromCarve},
     };
 
     for (const TestCase& test : tests) {
