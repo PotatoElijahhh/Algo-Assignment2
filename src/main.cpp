@@ -1,13 +1,16 @@
 // Command-line front end:
 //   seamcarve <input> <output> [--width W] [--height H] [--method M] [--threads N]
+//             [--frames DIR] [--frame-every N]
 
 #include "seam/carver.hpp"
 #include "seam/image.hpp"
 #include "seam/parallel.hpp"
+#include "seam/visualise.hpp"
 
 #include <chrono>
 #include <exception>
 #include <iostream>
+#include <memory>
 #include <string>
 
 namespace {
@@ -23,7 +26,10 @@ void printUsage() {
                  "                 greedy      greedy row-by-row choice\n"
                  "                 graphcut    minimum cut / max-flow\n"
                  "  --threads N  number of threads for the energy map, and for the DP with\n"
-                 "               dp-parallel (default: 1)\n";
+                 "               dp-parallel (default: 1)\n"
+                 "  --frames DIR  save a PNG of every step into folder DIR, with the seam about\n"
+                 "               to be removed in red (vertical) or blue (horizontal)\n"
+                 "  --frame-every N  with --frames, only save every N-th seam (default: 1)\n";
 }
 
 seam::Method parseMethod(const std::string& name) {
@@ -60,6 +66,8 @@ int main(int argc, char** argv) {
         int targetHeight = -1;
         std::string methodName = "dp";
         int threads = 1;
+        std::string framesFolder; // empty = don't save frames
+        int frameEvery = 1;
 
         for (int i = 3; i < argc; ++i) {
             const std::string arg = argv[i];
@@ -75,6 +83,10 @@ int main(int argc, char** argv) {
                 methodName = value;
             } else if (arg == "--threads") {
                 threads = std::stoi(value);
+            } else if (arg == "--frames") {
+                framesFolder = value;
+            } else if (arg == "--frame-every") {
+                frameEvery = std::stoi(value);
             } else {
                 throw std::invalid_argument("unknown option " + arg);
             }
@@ -96,15 +108,34 @@ int main(int argc, char** argv) {
             targetHeight = input.height;
         }
 
+        // With --frames, carve() calls this callback before removing each seam.
+        // Without it, the callback stays empty and carve() skips it.
+        std::unique_ptr<seam::FrameRecorder> frames;
+        seam::SeamCallback onSeam;
+        if (!framesFolder.empty()) {
+            frames = std::make_unique<seam::FrameRecorder>(framesFolder, frameEvery);
+            onSeam = [&frames](const seam::Image& current, const seam::Seam& s, seam::Orientation o) {
+                frames->record(current, s, o);
+            };
+        }
+
         const auto start = std::chrono::steady_clock::now();
-        const seam::Image output = seam::carve(input, targetWidth, targetHeight, method, {}, threads);
+        const seam::Image output = seam::carve(input, targetWidth, targetHeight, method, onSeam, threads);
         const auto end = std::chrono::steady_clock::now();
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
         seam::saveImage(output, outputPath);
         std::cout << "Carved " << input.width << "x" << input.height << " -> " << output.width << "x"
                   << output.height << " using " << methodName << " (" << threads << " thread"
-                  << (threads == 1 ? "" : "s") << ") in " << ms << " ms\n";
+                  << (threads == 1 ? "" : "s") << ") in " << ms << " ms";
+        if (frames) {
+            frames->saveFinal(output);
+            // Writing PNGs is slow, so the time above includes it when frames are on.
+            std::cout << " (including saving frames)\n"
+                      << "Saved " << frames->framesSaved() << " frames for " << frames->seamsSeen()
+                      << " seams to " << framesFolder;
+        }
+        std::cout << "\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";

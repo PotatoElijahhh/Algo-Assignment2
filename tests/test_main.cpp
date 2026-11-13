@@ -8,6 +8,7 @@
 #include "seam/visualise.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -388,6 +389,101 @@ void testPaintEverySeamFromCarve() {
     CHECK(allOk);
 }
 
+void testPadToSize() {
+    Image img(2, 1);
+    fillRect(img, 0, 2, 0, 1, 200);
+    const seam::Colour grey{40, 40, 40};
+    const Image padded = seam::padToSize(img, 4, 3, grey);
+    CHECK(padded.width == 4 && padded.height == 3);
+    CHECK(padded.pixel(0, 0)[0] == 200 && padded.pixel(0, 1)[0] == 200); // image in the top-left
+    CHECK(hasColour(padded, 0, 2, grey));                                // right of the image
+    CHECK(hasColour(padded, 2, 0, grey));                                // below the image
+
+    bool threw = false;
+    try {
+        seam::padToSize(img, 1, 1, grey); // canvas smaller than the image
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// Makes an empty temporary folder for a test and returns its path.
+std::filesystem::path freshTempFolder(const std::string& name) {
+    const std::filesystem::path folder = std::filesystem::temp_directory_path() / name;
+    std::filesystem::remove_all(folder);
+    return folder;
+}
+
+void testFrameRecorderSavesEveryNthSeam() {
+    std::mt19937 rng(21);
+    const Image img = randomImage(rng, 12, 9);
+    const std::filesystem::path folder = freshTempFolder("seam_frames_test_every");
+
+    // 12x9 -> 9x7 removes 3 vertical then 2 horizontal seams (seams 1..5).
+    // With every = 2, seams 1, 3 and 5 are saved, plus the final image.
+    seam::FrameRecorder frames(folder.string(), 2);
+    const Image out = seam::carve(img, 9, 7, seam::Method::DynamicProgramming,
+                                  [&frames](const Image& current, const Seam& s, seam::Orientation o) {
+                                      frames.record(current, s, o);
+                                  });
+    frames.saveFinal(out);
+
+    CHECK(frames.seamsSeen() == 5);
+    CHECK(frames.framesSaved() == 4);
+    CHECK(std::filesystem::exists(folder / "frame_0001_v.png"));
+    CHECK(!std::filesystem::exists(folder / "frame_0002_v.png")); // skipped
+    CHECK(std::filesystem::exists(folder / "frame_0003_v.png"));
+    CHECK(std::filesystem::exists(folder / "frame_0005_h.png")); // 5th seam is horizontal
+    CHECK(std::filesystem::exists(folder / "frame_0006_final.png"));
+
+    // Every frame is padded to the original 12x9.
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        const Image frame = seam::loadImage(entry.path().string());
+        CHECK(frame.width == 12 && frame.height == 9);
+    }
+    std::filesystem::remove_all(folder);
+}
+
+void testFirstFrameShowsTheFirstSeam() {
+    std::mt19937 rng(22);
+    Image img = randomImage(rng, 10, 6);
+    // Avoid pure red pixels in the input, so the only red pixels in the frame are the seam.
+    for (std::size_t i = 0; i < img.data.size(); i += 3) {
+        img.data[i + 1] = std::max<std::uint8_t>(img.data[i + 1], 1);
+    }
+    const std::filesystem::path folder = freshTempFolder("seam_frames_test_first");
+
+    seam::FrameRecorder frames(folder.string(), 1);
+    seam::carve(img, 9, 6, seam::Method::DynamicProgramming,
+                [&frames](const Image& current, const Seam& s, seam::Orientation o) {
+                    frames.record(current, s, o);
+                });
+
+    // The first seam carve() removes is the DP seam of the original image's energy map.
+    const Seam expected = seam::findVerticalSeamDP(seam::computeEnergy(img));
+    const Image frame = seam::loadImage((folder / "frame_0001_v.png").string()); // PNG is lossless
+    int redPixels = 0;
+    for (int row = 0; row < frame.height; ++row) {
+        CHECK(hasColour(frame, row, expected[row], seam::kRed));
+        for (int col = 0; col < frame.width; ++col) {
+            redPixels += hasColour(frame, row, col, seam::kRed) ? 1 : 0;
+        }
+    }
+    CHECK(redPixels == frame.height); // exactly one red pixel per row: the seam
+    std::filesystem::remove_all(folder);
+}
+
+void testFrameRecorderRejectsBadEvery() {
+    bool threw = false;
+    try {
+        seam::FrameRecorder frames(freshTempFolder("seam_frames_test_bad").string(), 0);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 } // namespace
 
 struct TestCase {
@@ -417,6 +513,10 @@ int main() {
         {"paint horizontal seam", testPaintHorizontalSeam},
         {"paint seam rejects bad seams", testPaintSeamRejectsBadSeams},
         {"paint every seam from carve", testPaintEverySeamFromCarve},
+        {"pad to size", testPadToSize},
+        {"frame recorder saves every N-th seam", testFrameRecorderSavesEveryNthSeam},
+        {"first frame shows the first seam", testFirstFrameShowsTheFirstSeam},
+        {"frame recorder rejects bad 'every'", testFrameRecorderRejectsBadEvery},
     };
 
     for (const TestCase& test : tests) {
