@@ -484,6 +484,99 @@ void testFrameRecorderRejectsBadEvery() {
     CHECK(threw);
 }
 
+// Carves `img` to targetWidth x targetHeight while a SeamTracker records every seam.
+// Returns the carved image; the tracker is filled in through the reference.
+Image carveWithTracker(const Image& img, int targetWidth, int targetHeight, seam::SeamTracker& tracker) {
+    return seam::carve(img, targetWidth, targetHeight, seam::Method::DynamicProgramming,
+                       [&tracker](const Image& current, const Seam& s, seam::Orientation o) {
+                           tracker.record(current, s, o);
+                       });
+}
+
+void testTrackerFollowsEveryPixel() {
+    // The key check: after carving, each pixel of the result must be exactly the original
+    // pixel the tracker says it came from. Tried on several sizes, including width-only,
+    // height-only and both.
+    std::mt19937 rng(31);
+    const int sizes[][4] = {{20, 15, 14, 15}, {20, 15, 20, 9}, {25, 18, 16, 11}, {8, 8, 1, 1}};
+    for (const auto& size : sizes) {
+        const Image img = randomImage(rng, size[0], size[1]);
+        seam::SeamTracker tracker(img);
+        const Image out = carveWithTracker(img, size[2], size[3], tracker);
+
+        CHECK(tracker.currentWidth() == out.width && tracker.currentHeight() == out.height);
+        bool allMatch = true;
+        for (int row = 0; row < out.height; ++row) {
+            for (int col = 0; col < out.width; ++col) {
+                const int orig = tracker.originalIndex(row, col);
+                const std::uint8_t* p = out.pixel(row, col);
+                const std::uint8_t* q = img.pixel(orig / img.width, orig % img.width);
+                allMatch = allMatch && p[0] == q[0] && p[1] == q[1] && p[2] == q[2];
+            }
+        }
+        CHECK(allMatch);
+    }
+}
+
+void testTrackerCountsRemovedPixels() {
+    std::mt19937 rng(32);
+    const Image img = randomImage(rng, 12, 9);
+    seam::SeamTracker tracker(img);
+    carveWithTracker(img, 9, 7, tracker);
+    // 3 vertical seams on a 9-tall image (27 pixels) + 2 horizontal seams on a
+    // 9-wide image (18 pixels) = 45 = 12*9 - 9*7. (markRemoved throws if any pixel
+    // were removed twice, so this also proves every removed pixel is different.)
+    CHECK(tracker.removedCount() == 3 * 9 + 2 * 9);
+    CHECK(tracker.removedCount() == 12 * 9 - 9 * 7);
+}
+
+void testOverlayColoursRemovedPixels() {
+    std::mt19937 rng(33);
+    Image img = randomImage(rng, 16, 12);
+    // Make sure no input pixel is pure red or pure blue, so only painted pixels match.
+    for (std::size_t i = 0; i < img.data.size(); i += 3) {
+        img.data[i + 1] = std::max<std::uint8_t>(img.data[i + 1], 1);
+    }
+    seam::SeamTracker tracker(img);
+    carveWithTracker(img, 12, 10, tracker); // 4 vertical seams, then 2 horizontal seams
+    const Image overlay = tracker.overlay();
+
+    CHECK(overlay.width == 16 && overlay.height == 12); // drawn on the original
+    int red = 0;
+    int blue = 0;
+    int unchanged = 0;
+    for (int row = 0; row < overlay.height; ++row) {
+        for (int col = 0; col < overlay.width; ++col) {
+            if (hasColour(overlay, row, col, seam::kRed)) {
+                ++red;
+            } else if (hasColour(overlay, row, col, seam::kBlue)) {
+                ++blue;
+            } else {
+                const std::uint8_t* p = overlay.pixel(row, col);
+                const std::uint8_t* q = img.pixel(row, col);
+                if (p[0] == q[0] && p[1] == q[1] && p[2] == q[2]) {
+                    ++unchanged;
+                }
+            }
+        }
+    }
+    CHECK(red == 4 * 12);           // 4 vertical seams, one pixel per row of the 12-tall image
+    CHECK(blue == 2 * 12);          // 2 horizontal seams, one pixel per column of the 12-wide image
+    CHECK(unchanged == 12 * 10);    // every kept pixel is untouched
+}
+
+void testTrackerRejectsWrongSize() {
+    Image img(6, 4);
+    seam::SeamTracker tracker(img);
+    bool threw = false;
+    try {
+        tracker.record(Image(5, 4), Seam{0, 0, 0, 0}, seam::Orientation::Vertical); // not 6 wide
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 } // namespace
 
 struct TestCase {
@@ -517,6 +610,10 @@ int main() {
         {"frame recorder saves every N-th seam", testFrameRecorderSavesEveryNthSeam},
         {"first frame shows the first seam", testFirstFrameShowsTheFirstSeam},
         {"frame recorder rejects bad 'every'", testFrameRecorderRejectsBadEvery},
+        {"tracker follows every pixel", testTrackerFollowsEveryPixel},
+        {"tracker counts removed pixels", testTrackerCountsRemovedPixels},
+        {"overlay colours removed pixels", testOverlayColoursRemovedPixels},
+        {"tracker rejects wrong size", testTrackerRejectsWrongSize},
     };
 
     for (const TestCase& test : tests) {

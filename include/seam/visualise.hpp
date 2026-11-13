@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace seam {
 
@@ -66,6 +67,51 @@ private:
     int framesSaved_ = 0;
     int canvasWidth_ = 0;  // size of the first image seen = the original image size
     int canvasHeight_ = 0;
+};
+
+// Shows all removed seams on the original image (assignment bonus 7a, "all the seams visualised").
+//
+// The problem: after a few seams are removed, pixel (row, col) of the current image is no
+// longer pixel (row, col) of the original, because everything right of (or below) a removed
+// pixel has shifted. So the tracker keeps a grid with the ORIGINAL position of every pixel
+// that is still in the image. Each time a seam is removed from the image, the same entries
+// are removed from the grid, and those original positions are marked as removed.
+//
+// Pass record() to carve() through its SeamCallback, then call overlay().
+// Time O(W * H) per seam (same as removing the seam itself). Space O(W * H).
+class SeamTracker {
+public:
+    explicit SeamTracker(const Image& original);
+
+    // Called once per seam, with the arguments carve() gives its callback.
+    // Throws std::invalid_argument if `current` is not the size the tracker expects
+    // or the seam does not fit.
+    void record(const Image& current, const Seam& seam, Orientation orientation);
+
+    // The original image with every removed pixel painted:
+    // red = removed by a vertical seam, blue = removed by a horizontal seam.
+    Image overlay() const;
+
+    // Original position (as row * originalWidth + col) of the pixel that is now at
+    // (row, col) of the current image.
+    int originalIndex(int row, int col) const;
+
+    int currentWidth() const { return width_; }
+    int currentHeight() const { return height_; }
+    int removedCount() const { return removedCount_; } // pixels removed so far
+
+private:
+    // What happened to each pixel of the original image (1 byte each).
+    enum class Status : std::uint8_t { Kept, RemovedVertical, RemovedHorizontal };
+
+    void markRemoved(int originalPos, Status how);
+
+    Image original_;
+    int width_;  // current image size
+    int height_;
+    std::vector<int> grid_;      // width_ * height_ entries: original position of each current pixel
+    std::vector<Status> status_; // one entry per pixel of the original image
+    int removedCount_ = 0;
 };
 
 } // namespace seam

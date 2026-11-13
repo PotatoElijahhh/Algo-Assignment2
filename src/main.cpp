@@ -1,6 +1,6 @@
 // Command-line front end:
 //   seamcarve <input> <output> [--width W] [--height H] [--method M] [--threads N]
-//             [--frames DIR] [--frame-every N]
+//             [--frames DIR] [--frame-every N] [--overlay FILE]
 
 #include "seam/carver.hpp"
 #include "seam/image.hpp"
@@ -29,7 +29,9 @@ void printUsage() {
                  "               dp-parallel (default: 1)\n"
                  "  --frames DIR  save a PNG of every step into folder DIR, with the seam about\n"
                  "               to be removed in red (vertical) or blue (horizontal)\n"
-                 "  --frame-every N  with --frames, only save every N-th seam (default: 1)\n";
+                 "  --frame-every N  with --frames, only save every N-th seam (default: 1)\n"
+                 "  --overlay FILE  save the original image with every removed seam painted\n"
+                 "               (red = vertical, blue = horizontal)\n";
 }
 
 seam::Method parseMethod(const std::string& name) {
@@ -68,6 +70,7 @@ int main(int argc, char** argv) {
         int threads = 1;
         std::string framesFolder; // empty = don't save frames
         int frameEvery = 1;
+        std::string overlayPath; // empty = don't save the overlay
 
         for (int i = 3; i < argc; ++i) {
             const std::string arg = argv[i];
@@ -87,6 +90,8 @@ int main(int argc, char** argv) {
                 framesFolder = value;
             } else if (arg == "--frame-every") {
                 frameEvery = std::stoi(value);
+            } else if (arg == "--overlay") {
+                overlayPath = value;
             } else {
                 throw std::invalid_argument("unknown option " + arg);
             }
@@ -108,14 +113,29 @@ int main(int argc, char** argv) {
             targetHeight = input.height;
         }
 
-        // With --frames, carve() calls this callback before removing each seam.
-        // Without it, the callback stays empty and carve() skips it.
+        // Visualisation: --frames and --overlay each need to see every seam before it is
+        // removed. Only the ones asked for are created (nullptr = off).
         std::unique_ptr<seam::FrameRecorder> frames;
-        seam::SeamCallback onSeam;
+        std::unique_ptr<seam::SeamTracker> tracker;
         if (!framesFolder.empty()) {
             frames = std::make_unique<seam::FrameRecorder>(framesFolder, frameEvery);
-            onSeam = [&frames](const seam::Image& current, const seam::Seam& s, seam::Orientation o) {
-                frames->record(current, s, o);
+        }
+        if (!overlayPath.empty()) {
+            tracker = std::make_unique<seam::SeamTracker>(input);
+        }
+
+        // carve() calls this before removing each seam. If neither option is on it stays
+        // empty, and carve() skips it.
+        seam::SeamCallback onSeam;
+        if (frames || tracker) {
+            onSeam = [&frames, &tracker](const seam::Image& current, const seam::Seam& s,
+                                         seam::Orientation o) {
+                if (frames) {
+                    frames->record(current, s, o);
+                }
+                if (tracker) {
+                    tracker->record(current, s, o);
+                }
             };
         }
 
@@ -129,13 +149,21 @@ int main(int argc, char** argv) {
                   << output.height << " using " << methodName << " (" << threads << " thread"
                   << (threads == 1 ? "" : "s") << ") in " << ms << " ms";
         if (frames) {
-            frames->saveFinal(output);
             // Writing PNGs is slow, so the time above includes it when frames are on.
-            std::cout << " (including saving frames)\n"
-                      << "Saved " << frames->framesSaved() << " frames for " << frames->seamsSeen()
-                      << " seams to " << framesFolder;
+            std::cout << " (including saving frames)";
         }
         std::cout << "\n";
+
+        if (frames) {
+            frames->saveFinal(output);
+            std::cout << "Saved " << frames->framesSaved() << " frames for " << frames->seamsSeen()
+                      << " seams to " << framesFolder << "\n";
+        }
+        if (tracker) {
+            seam::saveImage(tracker->overlay(), overlayPath);
+            std::cout << "Saved overlay of " << tracker->removedCount() << " removed pixels to "
+                      << overlayPath << "\n";
+        }
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";

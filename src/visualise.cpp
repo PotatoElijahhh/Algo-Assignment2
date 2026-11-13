@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 namespace seam {
 
@@ -118,6 +119,97 @@ void FrameRecorder::saveFinal(const Image& result) {
     saveImage(padToSize(result, canvasWidth_, canvasHeight_, kFrameBackground),
               framePath(seamsSeen_ + 1, "final"));
     ++framesSaved_;
+}
+
+// ---------------------------------------------------------------- SeamTracker
+
+SeamTracker::SeamTracker(const Image& original)
+    : original_(original),
+      width_(original.width),
+      height_(original.height),
+      grid_(static_cast<std::size_t>(original.width) * original.height),
+      status_(grid_.size(), Status::Kept) {
+    // At the start nothing has moved: the pixel at position p is original pixel p.
+    for (std::size_t p = 0; p < grid_.size(); ++p) {
+        grid_[p] = static_cast<int>(p);
+    }
+}
+
+int SeamTracker::originalIndex(int row, int col) const {
+    return grid_[static_cast<std::size_t>(row) * width_ + col];
+}
+
+void SeamTracker::markRemoved(int originalPos, Status how) {
+    const std::size_t p = static_cast<std::size_t>(originalPos);
+    if (status_[p] != Status::Kept) {
+        // Would mean the tracking is wrong: a pixel can only be removed once.
+        throw std::logic_error("SeamTracker: pixel removed twice");
+    }
+    status_[p] = how;
+    ++removedCount_;
+}
+
+void SeamTracker::record(const Image& current, const Seam& seam, Orientation orientation) {
+    if (current.width != width_ || current.height != height_) {
+        throw std::invalid_argument("SeamTracker: image size does not match the tracked size");
+    }
+
+    if (orientation == Orientation::Vertical) {
+        if (!isValidSeam(seam, height_, width_)) {
+            throw std::invalid_argument("SeamTracker: vertical seam does not fit the image");
+        }
+        // Same as removeVerticalSeam(), but on the grid of original positions:
+        // in each row, drop the entry at column seam[row]; the rest shift left.
+        std::vector<int> next(static_cast<std::size_t>(width_ - 1) * height_);
+        for (int row = 0; row < height_; ++row) {
+            int outCol = 0;
+            for (int col = 0; col < width_; ++col) {
+                if (col == seam[row]) {
+                    markRemoved(originalIndex(row, col), Status::RemovedVertical);
+                    continue;
+                }
+                next[static_cast<std::size_t>(row) * (width_ - 1) + outCol] = originalIndex(row, col);
+                ++outCol;
+            }
+        }
+        grid_ = std::move(next);
+        --width_;
+    } else {
+        if (!isValidSeam(seam, width_, height_)) {
+            throw std::invalid_argument("SeamTracker: horizontal seam does not fit the image");
+        }
+        // Horizontal seam: seam[col] = row removed in that column; the pixels below it
+        // shift up by one. (carve() does this by transposing; here we do it directly.)
+        std::vector<int> next(static_cast<std::size_t>(width_) * (height_ - 1));
+        for (int col = 0; col < width_; ++col) {
+            int outRow = 0;
+            for (int row = 0; row < height_; ++row) {
+                if (row == seam[col]) {
+                    markRemoved(originalIndex(row, col), Status::RemovedHorizontal);
+                    continue;
+                }
+                next[static_cast<std::size_t>(outRow) * width_ + col] = originalIndex(row, col);
+                ++outRow;
+            }
+        }
+        grid_ = std::move(next);
+        --height_;
+    }
+}
+
+Image SeamTracker::overlay() const {
+    Image out = original_;
+    for (int row = 0; row < out.height; ++row) {
+        for (int col = 0; col < out.width; ++col) {
+            const Status s = status_[static_cast<std::size_t>(row) * out.width + col];
+            if (s == Status::RemovedVertical) {
+                setPixel(out, row, col, kRed);
+            } else if (s == Status::RemovedHorizontal) {
+                setPixel(out, row, col, kBlue);
+            }
+        }
+    }
+    return out;
 }
 
 } // namespace seam
