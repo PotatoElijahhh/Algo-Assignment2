@@ -1,9 +1,10 @@
 // Command-line front end:
 //   seamcarve <input> <output> [--width W] [--height H] [--method M] [--threads N]
-//             [--frames DIR] [--frame-every N] [--overlay FILE]
+//             [--frames DIR] [--frame-every N] [--overlay FILE] [--interactive]
 
 #include "seam/carver.hpp"
 #include "seam/image.hpp"
+#include "seam/interactive.hpp"
 #include "seam/parallel.hpp"
 #include "seam/visualise.hpp"
 
@@ -31,7 +32,9 @@ void printUsage() {
                  "               to be removed in red (vertical) or blue (horizontal)\n"
                  "  --frame-every N  with --frames, only save every N-th seam (default: 1)\n"
                  "  --overlay FILE  save the original image with every removed seam painted\n"
-                 "               (red = vertical, blue = horizontal)\n";
+                 "               (red = vertical, blue = horizontal)\n"
+                 "  --interactive  keep asking for new sizes; each result is saved as\n"
+                 "               <output>_WxH (e.g. out_300x200.png). --width/--height are ignored\n";
 }
 
 seam::Method parseMethod(const std::string& name) {
@@ -71,9 +74,15 @@ int main(int argc, char** argv) {
         std::string framesFolder; // empty = don't save frames
         int frameEvery = 1;
         std::string overlayPath; // empty = don't save the overlay
+        bool interactive = false;
 
         for (int i = 3; i < argc; ++i) {
             const std::string arg = argv[i];
+            // Flags without a value come first; every other option is followed by a value.
+            if (arg == "--interactive") {
+                interactive = true;
+                continue;
+            }
             if (i + 1 >= argc) {
                 throw std::invalid_argument("missing value after " + arg);
             }
@@ -106,6 +115,14 @@ int main(int argc, char** argv) {
             threads = 1;
         }
         const seam::Image input = seam::loadImage(inputPath);
+
+        if (interactive) {
+            if (!framesFolder.empty() || !overlayPath.empty()) {
+                std::cout << "Note: --frames and --overlay are not used in interactive mode\n";
+            }
+            seam::runInteractive(std::cin, std::cout, input, outputPath, method, threads);
+            return 0;
+        }
         if (targetWidth < 0) {
             targetWidth = input.width;
         }

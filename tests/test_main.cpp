@@ -4,6 +4,7 @@
 #include "seam/carver.hpp"
 #include "seam/energy.hpp"
 #include "seam/image.hpp"
+#include "seam/interactive.hpp"
 #include "seam/seam.hpp"
 #include "seam/visualise.hpp"
 
@@ -12,6 +13,7 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -577,6 +579,70 @@ void testTrackerRejectsWrongSize() {
     CHECK(threw);
 }
 
+// ---------------------------------------------------------------- interactive mode (bonus 7b)
+
+void testOutputNameForSize() {
+    const std::filesystem::path expected = std::filesystem::path("results") / "balloon_300x200.png";
+    CHECK(seam::outputNameForSize((std::filesystem::path("results") / "balloon.png").string(), 300, 200) ==
+          expected.string());
+    CHECK(seam::outputNameForSize("out.jpg", 5, 7) == "out_5x7.jpg");
+}
+
+void testInteractiveCarvesEachRequest() {
+    std::mt19937 rng(41);
+    const Image img = randomImage(rng, 16, 12);
+    const std::filesystem::path folder = freshTempFolder("seam_interactive_test");
+    std::filesystem::create_directories(folder);
+    const std::string outputPath = (folder / "out.png").string();
+
+    // What a user might type: two good sizes (the second BIGGER than the first, which works
+    // because every request starts from the original), width only, then quit.
+    std::istringstream typed("10 8\n14 11\n12\nq\n");
+    std::ostringstream shown;
+    const int saved = seam::runInteractive(typed, shown, img, outputPath, seam::Method::DynamicProgramming, 1);
+
+    CHECK(saved == 3);
+    const Image a = seam::loadImage((folder / "out_10x8.png").string());
+    const Image b = seam::loadImage((folder / "out_14x11.png").string());
+    const Image c = seam::loadImage((folder / "out_12x12.png").string()); // height kept at 12
+    CHECK(a.width == 10 && a.height == 8);
+    CHECK(b.width == 14 && b.height == 11);
+    CHECK(c.width == 12 && c.height == 12);
+    // Same pixels as calling carve() directly.
+    CHECK(a.data == seam::carve(img, 10, 8, seam::Method::DynamicProgramming).data);
+    std::filesystem::remove_all(folder);
+}
+
+void testInteractiveKeepsGoingAfterBadInput() {
+    std::mt19937 rng(42);
+    const Image img = randomImage(rng, 8, 6);
+    const std::filesystem::path folder = freshTempFolder("seam_interactive_bad");
+    std::filesystem::create_directories(folder);
+
+    // Not numbers, extra words, too big, zero, a blank line, then one good size.
+    // No "q": the end of the input must also stop the loop.
+    std::istringstream typed("abc\n5 abc\n5 4 3\n20 4\n0 3\n\n5 4\n");
+    std::ostringstream shown;
+    const int saved = seam::runInteractive(typed, shown, img, (folder / "out.png").string(),
+                                           seam::Method::DynamicProgramming, 1);
+
+    CHECK(saved == 1); // only "5 4" worked
+    CHECK(std::filesystem::exists(folder / "out_5x4.png"));
+    const std::string text = shown.str();
+    // 3 lines that are not sizes -> 3 hints; 2 sizes out of range -> 2 errors.
+    int hints = 0;
+    int errors = 0;
+    for (std::size_t pos = 0; (pos = text.find("Please type", pos)) != std::string::npos; ++pos) {
+        ++hints;
+    }
+    for (std::size_t pos = 0; (pos = text.find("Error:", pos)) != std::string::npos; ++pos) {
+        ++errors;
+    }
+    CHECK(hints == 3);
+    CHECK(errors == 2);
+    std::filesystem::remove_all(folder);
+}
+
 } // namespace
 
 struct TestCase {
@@ -614,6 +680,9 @@ int main() {
         {"tracker counts removed pixels", testTrackerCountsRemovedPixels},
         {"overlay colours removed pixels", testOverlayColoursRemovedPixels},
         {"tracker rejects wrong size", testTrackerRejectsWrongSize},
+        {"output name for size", testOutputNameForSize},
+        {"interactive carves each request", testInteractiveCarvesEachRequest},
+        {"interactive keeps going after bad input", testInteractiveKeepsGoingAfterBadInput},
     };
 
     for (const TestCase& test : tests) {
