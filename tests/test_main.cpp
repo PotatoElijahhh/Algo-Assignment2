@@ -5,15 +5,21 @@
 #include "seam/energy.hpp"
 #include "seam/graphcut.hpp"
 #include "seam/image.hpp"
+#include "seam/interactive.hpp"
 #include "seam/seam.hpp"
+#include "seam/seam_order.hpp"
+#include "seam/visualise.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -560,6 +566,525 @@ void testGraphCutKeepsHighEnergyObject() {
     CHECK(blockPixels == 4 * 8);
 }
 
+// ---------------------------------------------------------------- visualisation (bonus 7a)
+
+// True if pixel (row, col) has exactly the colour c.
+bool hasColour(const Image& img, int row, int col, seam::Colour c) {
+    const std::uint8_t* p = img.pixel(row, col);
+    return p[0] == c.r && p[1] == c.g && p[2] == c.b;
+}
+
+// Counts the pixels that differ between two images of the same size.
+int countChangedPixels(const Image& a, const Image& b) {
+    int changed = 0;
+    for (int row = 0; row < a.height; ++row) {
+        for (int col = 0; col < a.width; ++col) {
+            const std::uint8_t* p = a.pixel(row, col);
+            const std::uint8_t* q = b.pixel(row, col);
+            if (p[0] != q[0] || p[1] != q[1] || p[2] != q[2]) {
+                ++changed;
+            }
+        }
+    }
+    return changed;
+}
+
+void testPaintVerticalSeam() {
+    Image img(4, 3); // 4 wide, 3 tall
+    fillRect(img, 0, 4, 0, 3, 50);
+    const Image before = img;
+    const Seam s = {1, 2, 1}; // one column per row
+
+    seam::paintSeam(img, s, seam::Orientation::Vertical, seam::kRed);
+
+    CHECK(hasColour(img, 0, 1, seam::kRed));
+    CHECK(hasColour(img, 1, 2, seam::kRed));
+    CHECK(hasColour(img, 2, 1, seam::kRed));
+    CHECK(countChangedPixels(before, img) == 3); // only the seam pixels changed
+}
+
+void testPaintHorizontalSeam() {
+    Image img(4, 3); // 4 wide, 3 tall
+    fillRect(img, 0, 4, 0, 3, 50);
+    const Image before = img;
+    const Seam s = {0, 1, 2, 2}; // one row per column
+
+    seam::paintSeam(img, s, seam::Orientation::Horizontal, seam::kBlue);
+
+    CHECK(hasColour(img, 0, 0, seam::kBlue));
+    CHECK(hasColour(img, 1, 1, seam::kBlue));
+    CHECK(hasColour(img, 2, 2, seam::kBlue));
+    CHECK(hasColour(img, 2, 3, seam::kBlue));
+    CHECK(countChangedPixels(before, img) == 4);
+}
+
+void testPaintSeamRejectsBadSeams() {
+    Image img(4, 3);
+    // Each entry is an invalid seam; painting any of them must throw.
+    const std::vector<std::pair<Seam, seam::Orientation>> bad = {
+        {{1, 2}, seam::Orientation::Vertical},          // too short (needs 3 rows)
+        {{0, 2, 1}, seam::Orientation::Vertical},       // jumps two columns
+        {{1, 4, 3}, seam::Orientation::Vertical},       // column 4 is out of range
+        {{0, 1, 2}, seam::Orientation::Horizontal},     // too short (needs 4 columns)
+        {{0, 1, 2, 3}, seam::Orientation::Horizontal},  // row 3 is out of range
+    };
+    for (const auto& entry : bad) {
+        bool threw = false;
+        try {
+            seam::paintSeam(img, entry.first, entry.second, seam::kRed);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        CHECK(threw);
+    }
+}
+
+// Every seam carve() reports can be painted, and exactly one pixel per row (vertical)
+// or per column (horizontal) changes colour.
+void testPaintEverySeamFromCarve() {
+    std::mt19937 rng(8);
+    const Image img = randomImage(rng, 20, 15);
+    bool allOk = true;
+    seam::carve(img, 14, 10, seam::Method::DynamicProgramming,
+                [&allOk](const Image& current, const Seam& s, seam::Orientation orientation) {
+                    // Paint on an all-black copy, so every seam pixel is guaranteed to change.
+                    Image painted = current;
+                    fillRect(painted, 0, painted.width, 0, painted.height, 0);
+                    const Image black = painted;
+                    seam::paintSeam(painted, s, orientation, seam::Colour{0, 255, 0});
+                    const int expected =
+                        orientation == seam::Orientation::Vertical ? current.height : current.width;
+                    allOk = allOk && countChangedPixels(black, painted) == expected;
+                });
+    CHECK(allOk);
+}
+
+void testPadToSize() {
+    Image img(2, 1);
+    fillRect(img, 0, 2, 0, 1, 200);
+    const seam::Colour grey{40, 40, 40};
+    const Image padded = seam::padToSize(img, 4, 3, grey);
+    CHECK(padded.width == 4 && padded.height == 3);
+    CHECK(padded.pixel(0, 0)[0] == 200 && padded.pixel(0, 1)[0] == 200); // image in the top-left
+    CHECK(hasColour(padded, 0, 2, grey));                                // right of the image
+    CHECK(hasColour(padded, 2, 0, grey));                                // below the image
+
+    bool threw = false;
+    try {
+        seam::padToSize(img, 1, 1, grey); // canvas smaller than the image
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// A temporary folder for one test. It starts empty (anything left from an earlier run is
+// removed) and is deleted again when the test function ends, even if it ends early because
+// of an exception (the destructor runs either way).
+struct TempFolder {
+    std::filesystem::path path;
+
+    explicit TempFolder(const std::string& name) : path(std::filesystem::temp_directory_path() / name) {
+        std::filesystem::remove_all(path);
+    }
+    ~TempFolder() {
+        std::error_code ignored; // never throw from a destructor
+        std::filesystem::remove_all(path, ignored);
+    }
+    TempFolder(const TempFolder&) = delete;
+    TempFolder& operator=(const TempFolder&) = delete;
+};
+
+void testFrameRecorderSavesEveryNthSeam() {
+    std::mt19937 rng(21);
+    const Image img = randomImage(rng, 12, 9);
+    const TempFolder temp("seam_frames_test_every");
+    const std::filesystem::path& folder = temp.path;
+
+    // 12x9 -> 9x7 removes 3 vertical then 2 horizontal seams (seams 1..5).
+    // With every = 2, seams 1, 3 and 5 are saved, plus the final image.
+    seam::FrameRecorder frames(folder.string(), 2);
+    const Image out = seam::carve(img, 9, 7, seam::Method::DynamicProgramming,
+                                  [&frames](const Image& current, const Seam& s, seam::Orientation o) {
+                                      frames.record(current, s, o);
+                                  });
+    frames.saveFinal(out);
+
+    CHECK(frames.seamsSeen() == 5);
+    CHECK(frames.framesSaved() == 4);
+    CHECK(std::filesystem::exists(folder / "frame_0001_v.png"));
+    CHECK(!std::filesystem::exists(folder / "frame_0002_v.png")); // skipped
+    CHECK(std::filesystem::exists(folder / "frame_0003_v.png"));
+    CHECK(std::filesystem::exists(folder / "frame_0005_h.png")); // 5th seam is horizontal
+    CHECK(std::filesystem::exists(folder / "frame_0006_final.png"));
+
+    // Every frame is padded to the original 12x9.
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        const Image frame = seam::loadImage(entry.path().string());
+        CHECK(frame.width == 12 && frame.height == 9);
+    }
+}
+
+void testFirstFrameShowsTheFirstSeam() {
+    std::mt19937 rng(22);
+    Image img = randomImage(rng, 10, 6);
+    // Avoid pure red pixels in the input, so the only red pixels in the frame are the seam.
+    for (std::size_t i = 0; i < img.data.size(); i += 3) {
+        img.data[i + 1] = std::max<std::uint8_t>(img.data[i + 1], 1);
+    }
+    const TempFolder temp("seam_frames_test_first");
+    const std::filesystem::path& folder = temp.path;
+
+    seam::FrameRecorder frames(folder.string(), 1);
+    seam::carve(img, 9, 6, seam::Method::DynamicProgramming,
+                [&frames](const Image& current, const Seam& s, seam::Orientation o) {
+                    frames.record(current, s, o);
+                });
+
+    // The first seam carve() removes is the DP seam of the original image's energy map.
+    const Seam expected = seam::findVerticalSeamDP(seam::computeEnergy(img));
+    const Image frame = seam::loadImage((folder / "frame_0001_v.png").string()); // PNG is lossless
+    int redPixels = 0;
+    for (int row = 0; row < frame.height; ++row) {
+        CHECK(hasColour(frame, row, expected[row], seam::kRed));
+        for (int col = 0; col < frame.width; ++col) {
+            redPixels += hasColour(frame, row, col, seam::kRed) ? 1 : 0;
+        }
+    }
+    CHECK(redPixels == frame.height); // exactly one red pixel per row: the seam
+}
+
+void testFrameRecorderRejectsBadEvery() {
+    bool threw = false;
+    try {
+        const TempFolder temp("seam_frames_test_bad");
+        seam::FrameRecorder frames(temp.path.string(), 0);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// Carves `img` to targetWidth x targetHeight while a SeamTracker records every seam.
+// Returns the carved image; the tracker is filled in through the reference.
+Image carveWithTracker(const Image& img, int targetWidth, int targetHeight, seam::SeamTracker& tracker) {
+    return seam::carve(img, targetWidth, targetHeight, seam::Method::DynamicProgramming,
+                       [&tracker](const Image& current, const Seam& s, seam::Orientation o) {
+                           tracker.record(current, s, o);
+                       });
+}
+
+void testTrackerFollowsEveryPixel() {
+    // The key check: after carving, each pixel of the result must be exactly the original
+    // pixel the tracker says it came from. Tried on several sizes, including width-only,
+    // height-only and both.
+    std::mt19937 rng(31);
+    const int sizes[][4] = {{20, 15, 14, 15}, {20, 15, 20, 9}, {25, 18, 16, 11}, {8, 8, 1, 1}};
+    for (const auto& size : sizes) {
+        const Image img = randomImage(rng, size[0], size[1]);
+        seam::SeamTracker tracker(img);
+        const Image out = carveWithTracker(img, size[2], size[3], tracker);
+
+        CHECK(tracker.currentWidth() == out.width && tracker.currentHeight() == out.height);
+        bool allMatch = true;
+        for (int row = 0; row < out.height; ++row) {
+            for (int col = 0; col < out.width; ++col) {
+                const int orig = tracker.originalIndex(row, col);
+                const std::uint8_t* p = out.pixel(row, col);
+                const std::uint8_t* q = img.pixel(orig / img.width, orig % img.width);
+                allMatch = allMatch && p[0] == q[0] && p[1] == q[1] && p[2] == q[2];
+            }
+        }
+        CHECK(allMatch);
+    }
+}
+
+void testTrackerCountsRemovedPixels() {
+    std::mt19937 rng(32);
+    const Image img = randomImage(rng, 12, 9);
+    seam::SeamTracker tracker(img);
+    carveWithTracker(img, 9, 7, tracker);
+    // 3 vertical seams on a 9-tall image (27 pixels) + 2 horizontal seams on a
+    // 9-wide image (18 pixels) = 45 = 12*9 - 9*7. (markRemoved throws if any pixel
+    // were removed twice, so this also proves every removed pixel is different.)
+    CHECK(tracker.removedCount() == 3 * 9 + 2 * 9);
+    CHECK(tracker.removedCount() == 12 * 9 - 9 * 7);
+}
+
+void testOverlayColoursRemovedPixels() {
+    std::mt19937 rng(33);
+    Image img = randomImage(rng, 16, 12);
+    // Make sure no input pixel is pure red or pure blue, so only painted pixels match.
+    for (std::size_t i = 0; i < img.data.size(); i += 3) {
+        img.data[i + 1] = std::max<std::uint8_t>(img.data[i + 1], 1);
+    }
+    seam::SeamTracker tracker(img);
+    carveWithTracker(img, 12, 10, tracker); // 4 vertical seams, then 2 horizontal seams
+    const Image overlay = tracker.overlay();
+
+    CHECK(overlay.width == 16 && overlay.height == 12); // drawn on the original
+    int red = 0;
+    int blue = 0;
+    int unchanged = 0;
+    for (int row = 0; row < overlay.height; ++row) {
+        for (int col = 0; col < overlay.width; ++col) {
+            if (hasColour(overlay, row, col, seam::kRed)) {
+                ++red;
+            } else if (hasColour(overlay, row, col, seam::kBlue)) {
+                ++blue;
+            } else {
+                const std::uint8_t* p = overlay.pixel(row, col);
+                const std::uint8_t* q = img.pixel(row, col);
+                if (p[0] == q[0] && p[1] == q[1] && p[2] == q[2]) {
+                    ++unchanged;
+                }
+            }
+        }
+    }
+    CHECK(red == 4 * 12);           // 4 vertical seams, one pixel per row of the 12-tall image
+    CHECK(blue == 2 * 12);          // 2 horizontal seams, one pixel per column of the 12-wide image
+    CHECK(unchanged == 12 * 10);    // every kept pixel is untouched
+}
+
+void testTrackerRejectsWrongSize() {
+    Image img(6, 4);
+    seam::SeamTracker tracker(img);
+    bool threw = false;
+    try {
+        tracker.record(Image(5, 4), Seam{0, 0, 0, 0}, seam::Orientation::Vertical); // not 6 wide
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// ---------------------------------------------------------------- interactive mode (bonus 7b)
+
+void testOutputNameForSize() {
+    const std::filesystem::path expected = std::filesystem::path("results") / "balloon_300x200.png";
+    CHECK(seam::outputNameForSize((std::filesystem::path("results") / "balloon.png").string(), 300, 200) ==
+          expected.string());
+    CHECK(seam::outputNameForSize("out.jpg", 5, 7) == "out_5x7.jpg");
+}
+
+void testInteractiveCarvesEachRequest() {
+    std::mt19937 rng(41);
+    const Image img = randomImage(rng, 16, 12);
+    const TempFolder temp("seam_interactive_test");
+    const std::filesystem::path& folder = temp.path;
+    std::filesystem::create_directories(folder);
+    const std::string outputPath = (folder / "out.png").string();
+
+    // What a user might type: two good sizes (the second BIGGER than the first, which works
+    // because every request starts from the original), width only, then quit.
+    std::istringstream typed("10 8\n14 11\n12\nq\n");
+    std::ostringstream shown;
+    const int saved = seam::runInteractive(typed, shown, img, outputPath, seam::Method::DynamicProgramming, 1);
+
+    CHECK(saved == 3);
+    const Image a = seam::loadImage((folder / "out_10x8.png").string());
+    const Image b = seam::loadImage((folder / "out_14x11.png").string());
+    const Image c = seam::loadImage((folder / "out_12x12.png").string()); // height kept at 12
+    CHECK(a.width == 10 && a.height == 8);
+    CHECK(b.width == 14 && b.height == 11);
+    CHECK(c.width == 12 && c.height == 12);
+    // Same pixels as calling carve() directly.
+    CHECK(a.data == seam::carve(img, 10, 8, seam::Method::DynamicProgramming).data);
+}
+
+void testInteractiveKeepsGoingAfterBadInput() {
+    std::mt19937 rng(42);
+    const Image img = randomImage(rng, 8, 6);
+    const TempFolder temp("seam_interactive_bad");
+    const std::filesystem::path& folder = temp.path;
+    std::filesystem::create_directories(folder);
+
+    // Not numbers, extra words, too big, zero, a blank line, then one good size.
+    // No "q": the end of the input must also stop the loop.
+    std::istringstream typed("abc\n5 abc\n5 4 3\n20 4\n0 3\n\n5 4\n");
+    std::ostringstream shown;
+    const int saved = seam::runInteractive(typed, shown, img, (folder / "out.png").string(),
+                                           seam::Method::DynamicProgramming, 1);
+
+    CHECK(saved == 1); // only "5 4" worked
+    CHECK(std::filesystem::exists(folder / "out_5x4.png"));
+    const std::string text = shown.str();
+    // 3 lines that are not sizes -> 3 hints; 2 sizes out of range -> 2 errors.
+    int hints = 0;
+    int errors = 0;
+    for (std::size_t pos = 0; (pos = text.find("Please type", pos)) != std::string::npos; ++pos) {
+        ++hints;
+    }
+    for (std::size_t pos = 0; (pos = text.find("Error:", pos)) != std::string::npos; ++pos) {
+        ++errors;
+    }
+    CHECK(hints == 3);
+    CHECK(errors == 2);
+}
+
+// ---------------------------------------------------------------- seam order maps (GUI, bonus 7b)
+
+void testVerticalOrderMatchesCarve() {
+    // The key check: resizing with the precomputed order gives EXACTLY carve()'s pixels,
+    // for every width the order covers.
+    std::mt19937 rng(51);
+    const Image img = randomImage(rng, 18, 11);
+    const seam::SeamOrder order = seam::computeVerticalSeamOrder(img, 1, seam::Method::DynamicProgramming);
+    CHECK(order.seamCount == 17);
+    bool allMatch = true;
+    for (int w = 1; w <= img.width; ++w) {
+        const Image fast = seam::applyVerticalOrder(img, order, w);
+        const Image slow = seam::carve(img, w, img.height, seam::Method::DynamicProgramming);
+        allMatch = allMatch && fast.width == w && fast.data == slow.data;
+    }
+    CHECK(allMatch);
+}
+
+void testOrderHasOnePixelPerRowPerStep() {
+    // Each vertical seam removes exactly one pixel per row, so in every row each step
+    // 1..seamCount appears once, and the remaining (minWidth) pixels have step 0.
+    std::mt19937 rng(52);
+    const Image img = randomImage(rng, 14, 9);
+    const seam::SeamOrder order = seam::computeVerticalSeamOrder(img, 4, seam::Method::DynamicProgramming);
+    bool ok = true;
+    for (int row = 0; row < img.height; ++row) {
+        std::vector<int> seen(order.seamCount + 1, 0);
+        for (int col = 0; col < img.width; ++col) {
+            ++seen[static_cast<std::size_t>(order.at(row, col))];
+        }
+        ok = ok && seen[0] == 4; // 4 pixels never removed
+        for (int k = 1; k <= order.seamCount; ++k) {
+            ok = ok && seen[static_cast<std::size_t>(k)] == 1;
+        }
+    }
+    CHECK(ok);
+}
+
+void testWidthThenHeightOrderMatchesCarve() {
+    // What the GUI does: the vertical order gives the width; then a horizontal order computed
+    // on that narrower image gives the height. Must equal carve(img, w, h).
+    std::mt19937 rng(53);
+    const Image img = randomImage(rng, 16, 13);
+    const seam::SeamOrder vertical = seam::computeVerticalSeamOrder(img, 1, seam::Method::DynamicProgramming);
+    bool allMatch = true;
+    for (int w : {16, 12, 7}) {
+        const Image narrow = seam::applyVerticalOrder(img, vertical, w);
+        const seam::SeamOrder horizontal =
+            seam::computeHorizontalSeamOrder(narrow, 1, seam::Method::DynamicProgramming);
+        for (int h : {13, 10, 4, 1}) {
+            const Image fast = seam::applyHorizontalOrder(narrow, horizontal, h);
+            const Image slow = seam::carve(img, w, h, seam::Method::DynamicProgramming);
+            allMatch = allMatch && fast.width == w && fast.height == h && fast.data == slow.data;
+        }
+    }
+    CHECK(allMatch);
+}
+
+void testPaintRemovedPixelsMatchesTracker() {
+    // The GUI's live "show seams" picture must be the same as the Step 3 overlay.
+    std::mt19937 rng(54);
+    const Image img = randomImage(rng, 15, 12);
+    const int w = 10;
+    const int h = 8;
+    const seam::SeamOrder vertical = seam::computeVerticalSeamOrder(img, 1, seam::Method::DynamicProgramming);
+    const Image narrow = seam::applyVerticalOrder(img, vertical, w);
+    const seam::SeamOrder horizontal = seam::computeHorizontalSeamOrder(narrow, 1, seam::Method::DynamicProgramming);
+
+    seam::SeamTracker tracker(img);
+    carveWithTracker(img, w, h, tracker);
+    CHECK(seam::paintRemovedPixels(img, vertical, w, horizontal, h).data == tracker.overlay().data);
+}
+
+void testSeamOrderProgressAndRange() {
+    std::mt19937 rng(55);
+    const Image img = randomImage(rng, 10, 6);
+    int calls = 0;
+    int lastDone = 0;
+    const seam::SeamOrder order = seam::computeVerticalSeamOrder(
+        img, 6, seam::Method::DynamicProgramming, 1, [&calls, &lastDone](int done, int total) {
+            ++calls;
+            lastDone = done;
+            CHECK(total == 4);
+        });
+    CHECK(calls == 4 && lastDone == 4);
+
+    // Widths below 6 were never computed, so they must be rejected.
+    bool threw = false;
+    try {
+        seam::applyVerticalOrder(img, order, 5);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// ---------------------------------------------------------------- review fixes
+
+void testSaveCreatesMissingFolder() {
+    const TempFolder temp("seam_save_folder_test");
+    const std::filesystem::path path = temp.path / "results" / "deeper" / "out.png"; // none exist yet
+    Image img(3, 2);
+    fillRect(img, 0, 3, 0, 2, 120);
+    seam::saveImageCreatingFolder(img, path.string());
+    CHECK(std::filesystem::exists(path));
+    CHECK(seam::loadImage(path.string()).data == img.data);
+}
+
+void testInteractiveSavesIntoNewFolder() {
+    // Like the README example on a fresh clone: the output folder does not exist yet.
+    std::mt19937 rng(43);
+    const Image img = randomImage(rng, 8, 6);
+    const TempFolder temp("seam_interactive_new_folder");
+    const std::filesystem::path output = temp.path / "results" / "out.png";
+
+    std::istringstream typed("6 5\n");
+    std::ostringstream shown;
+    const int saved = seam::runInteractive(typed, shown, img, output.string(), seam::Method::DynamicProgramming, 1);
+    CHECK(saved == 1);
+    CHECK(std::filesystem::exists(temp.path / "results" / "out_6x5.png"));
+}
+
+void testInteractiveQuitIgnoresCaseAndSpaces() {
+    std::mt19937 rng(44);
+    const Image img = randomImage(rng, 8, 6);
+    const TempFolder temp("seam_interactive_quit");
+    const std::string output = (temp.path / "out.png").string();
+    // Each script must stop at its quit line, so the size after it is never carved.
+    const char* scripts[] = {"  Q  \n5 4\n", "QUIT\n5 4\n", "q\r\n5 4\n", "\tQuit\t\n5 4\n"};
+    for (const char* script : scripts) {
+        std::istringstream typed(script);
+        std::ostringstream shown;
+        CHECK(seam::runInteractive(typed, shown, img, output, seam::Method::DynamicProgramming, 1) == 0);
+    }
+    // Spaces around a size are fine too.
+    std::istringstream typed("   7    6   \nq\n");
+    std::ostringstream shown;
+    CHECK(seam::runInteractive(typed, shown, img, output, seam::Method::DynamicProgramming, 1) == 1);
+}
+
+void testFrameFileNameDigits() {
+    CHECK(seam::frameFileName(7, 1004, "v") == "frame_0007_v.png");    // normal photo: 4 digits
+    CHECK(seam::frameFileName(7, 9999, "h") == "frame_0007_h.png");
+    CHECK(seam::frameFileName(7, 12000, "v") == "frame_00007_v.png");  // > 9999 seams: 5 digits
+    CHECK(seam::frameFileName(10000, 12000, "final") == "frame_10000_final.png");
+    // With equal widths, names sort in number order (what File Explorer and ffmpeg rely on).
+    CHECK(seam::frameFileName(2000, 12000, "v") < seam::frameFileName(10000, 12000, "v"));
+}
+
+void testSeamOrderRejectsBadMinWidth() {
+    std::mt19937 rng(56);
+    const Image img = randomImage(rng, 6, 4);
+    for (int minWidth : {0, -3, 7}) {
+        bool threw = false;
+        try {
+            seam::computeVerticalSeamOrder(img, minWidth, seam::Method::DynamicProgramming);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        CHECK(threw);
+    }
+}
+
 } // namespace
 
 struct TestCase {
@@ -603,6 +1128,31 @@ int main() {
         {"graph cut: special shapes", testGraphCutSpecialShapes},
         {"graph cut: carve reaches target size", testCarveWithGraphCut},
         {"graph cut: keeps high-energy object", testGraphCutKeepsHighEnergyObject},
+        {"paint vertical seam", testPaintVerticalSeam},
+        {"paint horizontal seam", testPaintHorizontalSeam},
+        {"paint seam rejects bad seams", testPaintSeamRejectsBadSeams},
+        {"paint every seam from carve", testPaintEverySeamFromCarve},
+        {"pad to size", testPadToSize},
+        {"frame recorder saves every N-th seam", testFrameRecorderSavesEveryNthSeam},
+        {"first frame shows the first seam", testFirstFrameShowsTheFirstSeam},
+        {"frame recorder rejects bad 'every'", testFrameRecorderRejectsBadEvery},
+        {"tracker follows every pixel", testTrackerFollowsEveryPixel},
+        {"tracker counts removed pixels", testTrackerCountsRemovedPixels},
+        {"overlay colours removed pixels", testOverlayColoursRemovedPixels},
+        {"tracker rejects wrong size", testTrackerRejectsWrongSize},
+        {"output name for size", testOutputNameForSize},
+        {"interactive carves each request", testInteractiveCarvesEachRequest},
+        {"interactive keeps going after bad input", testInteractiveKeepsGoingAfterBadInput},
+        {"vertical order matches carve", testVerticalOrderMatchesCarve},
+        {"order has one pixel per row per step", testOrderHasOnePixelPerRowPerStep},
+        {"width then height order matches carve", testWidthThenHeightOrderMatchesCarve},
+        {"paint removed pixels matches tracker", testPaintRemovedPixelsMatchesTracker},
+        {"seam order progress and range", testSeamOrderProgressAndRange},
+        {"save creates missing folder", testSaveCreatesMissingFolder},
+        {"interactive saves into new folder", testInteractiveSavesIntoNewFolder},
+        {"interactive quit ignores case and spaces", testInteractiveQuitIgnoresCaseAndSpaces},
+        {"frame file name digits", testFrameFileNameDigits},
+        {"seam order rejects bad min width", testSeamOrderRejectsBadMinWidth},
     };
 
     int skipped = 0;

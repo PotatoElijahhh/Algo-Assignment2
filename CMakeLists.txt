@@ -33,6 +33,9 @@ add_library(seamcore
     src/seam_method.cpp
     src/carver.cpp
     src/parallel.cpp
+    src/visualise.cpp
+    src/interactive.cpp
+    src/seam_order.cpp
 )
 target_include_directories(seamcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(seamcore PRIVATE stb)
@@ -58,7 +61,50 @@ add_executable(seam_tests tests/test_main.cpp)
 target_link_libraries(seam_tests PRIVATE seamcore)
 add_test(NAME seam_tests COMMAND seam_tests)
 
-foreach(target seamcore seamcarve seambench seam_tests)
+# Optional slider window (assignment bonus 7b). OFF by default, so normal builds and CI
+# don't download or need anything extra. Turn on with: cmake -S . -B build -DSEAM_BUILD_GUI=ON
+option(SEAM_BUILD_GUI "Build the seamgui slider window (downloads Dear ImGui and GLFW)" OFF)
+set(SEAM_TARGETS seamcore seamcarve seambench seam_tests)
+
+if(SEAM_BUILD_GUI)
+    # GLFW opens the window and handles input. Only build the library itself.
+    set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE) # Linux: X11 is enough
+    FetchContent_Declare(
+        glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG        3.4
+    )
+    # Dear ImGui draws the sliders and buttons (MIT licence). It has no CMake file of its own,
+    # so we list its source files here.
+    FetchContent_Declare(
+        imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG        v1.91.9
+    )
+    FetchContent_MakeAvailable(glfw imgui)
+    find_package(OpenGL REQUIRED)
+
+    add_library(imgui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl2.cpp
+    )
+    target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+    target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+
+    add_executable(seamgui src/gui_main.cpp)
+    target_link_libraries(seamgui PRIVATE seamcore imgui)
+    list(APPEND SEAM_TARGETS seamgui)
+endif()
+
+foreach(target ${SEAM_TARGETS})
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4)
     else()
