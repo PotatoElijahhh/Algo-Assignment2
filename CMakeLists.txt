@@ -29,6 +29,7 @@ add_library(seamcore
     src/seam_dp_improved.cpp
     src/seam_greedy.cpp
     src/seam_graphcut.cpp
+    src/graphcut_flow.cpp
     src/seam_method.cpp
     src/carver.cpp
     src/parallel.cpp
