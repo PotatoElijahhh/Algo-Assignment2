@@ -10,7 +10,7 @@ The seam is found in three ways so they can be compared:
 |---|---|---|
 | Dynamic programming | `src/seam_dp.cpp` | Done |
 | Greedy (row-by-row choice) | `src/seam_greedy.cpp` | In progress |
-| Graph cut (min-cut / max-flow) | `src/seam_graphcut.cpp` | In progress |
+| Graph cut (min-cut / max-flow) | `src/graphcut_flow.cpp` (graph + max-flow), `src/seam_graphcut.cpp` (seam extraction) | Seam extraction done, graph + max-flow in progress |
 
 It also includes two **improvements** to the dynamic-programming version (assignment item 5d),
 both of which give exactly the same result as the original:
@@ -222,6 +222,38 @@ If a check fails, the line is marked `[FAIL]` and the file and line number of th
 | parallel DP matches original DP | The multithreaded DP (4 threads) returns exactly the same seam as the original |
 | parallel energy matches serial | The multithreaded energy map is exactly equal to the single-threaded one |
 | all DP versions carve the same image | Carving with `dp`, `dp-compact` and `dp-parallel` gives identical images |
+| graph cut: source side follows residual edges | The BFS from the source uses only edges with residual capacity left, including reverse edges |
+| graph cut: extract reads rightmost source pixel | In each row the seam pixel is the rightmost pixel on the source side of the cut |
+| graph cut: extract edge columns | Seams on the first column and on the last allowed column (`cols - 2`) |
+| graph cut: tiny residual counts as saturated | Rounding leftovers (e.g. `1e-12`) do not count as capacity |
+| graph cut: rejects ... (5 tests) | A residual graph that is not a valid seam cut (sink still reachable, a row cut twice or not at all, seam not connected, wrong size) throws an error instead of returning a wrong seam |
+| graph cut: single column | A one-column image needs no cut |
+| graph cut: matches brute force | On 500 random grids the graph-cut seam costs exactly as little as the best seam found by brute force over columns `0 .. cols-2` |
+| graph cut: max flow equals seam cost | Max-flow min-cut theorem: the flow value equals the cost of the extracted seam |
+| graph cut: finds known seam | Same hand-checked 4x4 grid as the DP test |
+| graph cut: matches DP when last column blocked | With an expensive last column, graph cut and DP find seams of equal cost |
+| graph cut: Sobel energy | Same as above on real (non-integer) Sobel energies |
+| graph cut: special shapes | Two columns, one row, all-zero and all-equal energies |
+| graph cut: carve reaches target size / keeps high-energy object | Carving with `--method graphcut` works end to end |
+
+The end-to-end graph cut tests need `buildSeamGraph` and `maxFlow` from `src/graphcut_flow.cpp`.
+Until those are implemented they print `[SKIP]` instead of failing, and run automatically once
+they are.
+
+### Graph cut: how the two parts fit together
+
+`include/seam/graphcut.hpp` defines the `FlowGraph` shared by both parts (pixel `(i, j)` is node
+`i * cols + j`, then the source and the sink; edges are stored in pairs so `edges[e ^ 1]` is the
+reverse of `edges[e]`, and `cap` holds the residual capacity).
+
+1. `buildSeamGraph(energy)` builds the graph from the assignment (item 4).
+2. `maxFlow(g)` runs max-flow and leaves the residual capacities in `g`.
+3. `extractSeam(g)` runs a BFS from the source in the residual graph to find the source side
+   `S` of the minimum cut, then takes the rightmost pixel of `S` in each row. It checks that the
+   result is a valid seam and throws `std::logic_error` if the graph or flow is wrong.
+
+The extraction is `O(V + E) = O(rows * cols)`, small next to max-flow. Because the last column is
+tied to the sink with infinite capacity, the graph-cut seam never uses the last column.
 
 ### Adding a test
 
