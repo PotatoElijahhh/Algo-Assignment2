@@ -22,6 +22,22 @@ struct Colour {
 const Colour kRed{255, 0, 0};  // vertical seams
 const Colour kBlue{0, 0, 255}; // horizontal seams
 
+// Sets pixel (row, col) of img to `colour`.
+void paintPixel(Image& img, int row, int col, Colour colour);
+
+// Copies pixel (fromRow, fromCol) of `from` to pixel (toRow, toCol) of `to`.
+void copyPixel(const Image& from, int fromRow, int fromCol, Image& to, int toRow, int toCol);
+
+// Like saveImage(), but first creates the folder the file goes in (and any missing parents),
+// e.g. "results/" on a fresh clone, where it is git-ignored and does not exist yet.
+void saveImageCreatingFolder(const Image& img, const std::string& path);
+
+// Frame file name, zero-padded so that names sort in number order:
+//   frameFileName(7, 1004, "v") == "frame_0007_v.png"
+//   frameFileName(7, 12000, "v") == "frame_00007_v.png"
+// `largestNumber` is the biggest number that can occur; at least 4 digits are always used.
+std::string frameFileName(int number, int largestNumber, const std::string& suffix);
+
 // Paints every pixel of `seam` on `img` in `colour`.
 //   Vertical seam:   one entry per row,    seam[row] = column of the pixel (seam.size() == img.height).
 //   Horizontal seam: one entry per column, seam[col] = row of the pixel    (seam.size() == img.width).
@@ -58,7 +74,7 @@ public:
     int framesSaved() const { return framesSaved_; } // how many PNG files were written
 
 private:
-    // Builds "<folder>/frame_0007_v.png" style paths (number padded to 4 digits).
+    // Builds "<folder>/frame_0007_v.png" style paths (see frameFileName).
     std::string framePath(int number, const std::string& suffix) const;
 
     std::string folder_;

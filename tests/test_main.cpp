@@ -678,17 +678,28 @@ void testPadToSize() {
     CHECK(threw);
 }
 
-// Makes an empty temporary folder for a test and returns its path.
-std::filesystem::path freshTempFolder(const std::string& name) {
-    const std::filesystem::path folder = std::filesystem::temp_directory_path() / name;
-    std::filesystem::remove_all(folder);
-    return folder;
-}
+// A temporary folder for one test. It starts empty (anything left from an earlier run is
+// removed) and is deleted again when the test function ends, even if it ends early because
+// of an exception (the destructor runs either way).
+struct TempFolder {
+    std::filesystem::path path;
+
+    explicit TempFolder(const std::string& name) : path(std::filesystem::temp_directory_path() / name) {
+        std::filesystem::remove_all(path);
+    }
+    ~TempFolder() {
+        std::error_code ignored; // never throw from a destructor
+        std::filesystem::remove_all(path, ignored);
+    }
+    TempFolder(const TempFolder&) = delete;
+    TempFolder& operator=(const TempFolder&) = delete;
+};
 
 void testFrameRecorderSavesEveryNthSeam() {
     std::mt19937 rng(21);
     const Image img = randomImage(rng, 12, 9);
-    const std::filesystem::path folder = freshTempFolder("seam_frames_test_every");
+    const TempFolder temp("seam_frames_test_every");
+    const std::filesystem::path& folder = temp.path;
 
     // 12x9 -> 9x7 removes 3 vertical then 2 horizontal seams (seams 1..5).
     // With every = 2, seams 1, 3 and 5 are saved, plus the final image.
@@ -712,7 +723,6 @@ void testFrameRecorderSavesEveryNthSeam() {
         const Image frame = seam::loadImage(entry.path().string());
         CHECK(frame.width == 12 && frame.height == 9);
     }
-    std::filesystem::remove_all(folder);
 }
 
 void testFirstFrameShowsTheFirstSeam() {
@@ -722,7 +732,8 @@ void testFirstFrameShowsTheFirstSeam() {
     for (std::size_t i = 0; i < img.data.size(); i += 3) {
         img.data[i + 1] = std::max<std::uint8_t>(img.data[i + 1], 1);
     }
-    const std::filesystem::path folder = freshTempFolder("seam_frames_test_first");
+    const TempFolder temp("seam_frames_test_first");
+    const std::filesystem::path& folder = temp.path;
 
     seam::FrameRecorder frames(folder.string(), 1);
     seam::carve(img, 9, 6, seam::Method::DynamicProgramming,
@@ -741,13 +752,13 @@ void testFirstFrameShowsTheFirstSeam() {
         }
     }
     CHECK(redPixels == frame.height); // exactly one red pixel per row: the seam
-    std::filesystem::remove_all(folder);
 }
 
 void testFrameRecorderRejectsBadEvery() {
     bool threw = false;
     try {
-        seam::FrameRecorder frames(freshTempFolder("seam_frames_test_bad").string(), 0);
+        const TempFolder temp("seam_frames_test_bad");
+        seam::FrameRecorder frames(temp.path.string(), 0);
     } catch (const std::invalid_argument&) {
         threw = true;
     }
@@ -859,7 +870,8 @@ void testOutputNameForSize() {
 void testInteractiveCarvesEachRequest() {
     std::mt19937 rng(41);
     const Image img = randomImage(rng, 16, 12);
-    const std::filesystem::path folder = freshTempFolder("seam_interactive_test");
+    const TempFolder temp("seam_interactive_test");
+    const std::filesystem::path& folder = temp.path;
     std::filesystem::create_directories(folder);
     const std::string outputPath = (folder / "out.png").string();
 
@@ -878,13 +890,13 @@ void testInteractiveCarvesEachRequest() {
     CHECK(c.width == 12 && c.height == 12);
     // Same pixels as calling carve() directly.
     CHECK(a.data == seam::carve(img, 10, 8, seam::Method::DynamicProgramming).data);
-    std::filesystem::remove_all(folder);
 }
 
 void testInteractiveKeepsGoingAfterBadInput() {
     std::mt19937 rng(42);
     const Image img = randomImage(rng, 8, 6);
-    const std::filesystem::path folder = freshTempFolder("seam_interactive_bad");
+    const TempFolder temp("seam_interactive_bad");
+    const std::filesystem::path& folder = temp.path;
     std::filesystem::create_directories(folder);
 
     // Not numbers, extra words, too big, zero, a blank line, then one good size.
@@ -908,7 +920,6 @@ void testInteractiveKeepsGoingAfterBadInput() {
     }
     CHECK(hints == 3);
     CHECK(errors == 2);
-    std::filesystem::remove_all(folder);
 }
 
 // ---------------------------------------------------------------- seam order maps (GUI, bonus 7b)
@@ -1007,6 +1018,73 @@ void testSeamOrderProgressAndRange() {
     CHECK(threw);
 }
 
+// ---------------------------------------------------------------- review fixes
+
+void testSaveCreatesMissingFolder() {
+    const TempFolder temp("seam_save_folder_test");
+    const std::filesystem::path path = temp.path / "results" / "deeper" / "out.png"; // none exist yet
+    Image img(3, 2);
+    fillRect(img, 0, 3, 0, 2, 120);
+    seam::saveImageCreatingFolder(img, path.string());
+    CHECK(std::filesystem::exists(path));
+    CHECK(seam::loadImage(path.string()).data == img.data);
+}
+
+void testInteractiveSavesIntoNewFolder() {
+    // Like the README example on a fresh clone: the output folder does not exist yet.
+    std::mt19937 rng(43);
+    const Image img = randomImage(rng, 8, 6);
+    const TempFolder temp("seam_interactive_new_folder");
+    const std::filesystem::path output = temp.path / "results" / "out.png";
+
+    std::istringstream typed("6 5\n");
+    std::ostringstream shown;
+    const int saved = seam::runInteractive(typed, shown, img, output.string(), seam::Method::DynamicProgramming, 1);
+    CHECK(saved == 1);
+    CHECK(std::filesystem::exists(temp.path / "results" / "out_6x5.png"));
+}
+
+void testInteractiveQuitIgnoresCaseAndSpaces() {
+    std::mt19937 rng(44);
+    const Image img = randomImage(rng, 8, 6);
+    const TempFolder temp("seam_interactive_quit");
+    const std::string output = (temp.path / "out.png").string();
+    // Each script must stop at its quit line, so the size after it is never carved.
+    const char* scripts[] = {"  Q  \n5 4\n", "QUIT\n5 4\n", "q\r\n5 4\n", "\tQuit\t\n5 4\n"};
+    for (const char* script : scripts) {
+        std::istringstream typed(script);
+        std::ostringstream shown;
+        CHECK(seam::runInteractive(typed, shown, img, output, seam::Method::DynamicProgramming, 1) == 0);
+    }
+    // Spaces around a size are fine too.
+    std::istringstream typed("   7    6   \nq\n");
+    std::ostringstream shown;
+    CHECK(seam::runInteractive(typed, shown, img, output, seam::Method::DynamicProgramming, 1) == 1);
+}
+
+void testFrameFileNameDigits() {
+    CHECK(seam::frameFileName(7, 1004, "v") == "frame_0007_v.png");    // normal photo: 4 digits
+    CHECK(seam::frameFileName(7, 9999, "h") == "frame_0007_h.png");
+    CHECK(seam::frameFileName(7, 12000, "v") == "frame_00007_v.png");  // > 9999 seams: 5 digits
+    CHECK(seam::frameFileName(10000, 12000, "final") == "frame_10000_final.png");
+    // With equal widths, names sort in number order (what File Explorer and ffmpeg rely on).
+    CHECK(seam::frameFileName(2000, 12000, "v") < seam::frameFileName(10000, 12000, "v"));
+}
+
+void testSeamOrderRejectsBadMinWidth() {
+    std::mt19937 rng(56);
+    const Image img = randomImage(rng, 6, 4);
+    for (int minWidth : {0, -3, 7}) {
+        bool threw = false;
+        try {
+            seam::computeVerticalSeamOrder(img, minWidth, seam::Method::DynamicProgramming);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        CHECK(threw);
+    }
+}
+
 } // namespace
 
 struct TestCase {
@@ -1070,6 +1148,11 @@ int main() {
         {"width then height order matches carve", testWidthThenHeightOrderMatchesCarve},
         {"paint removed pixels matches tracker", testPaintRemovedPixelsMatchesTracker},
         {"seam order progress and range", testSeamOrderProgressAndRange},
+        {"save creates missing folder", testSaveCreatesMissingFolder},
+        {"interactive saves into new folder", testInteractiveSavesIntoNewFolder},
+        {"interactive quit ignores case and spaces", testInteractiveQuitIgnoresCaseAndSpaces},
+        {"frame file name digits", testFrameFileNameDigits},
+        {"seam order rejects bad min width", testSeamOrderRejectsBadMinWidth},
     };
 
     int skipped = 0;

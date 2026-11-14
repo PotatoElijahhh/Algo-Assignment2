@@ -9,11 +9,15 @@
 // When the width slider is released, the horizontal seam order for that width is computed the
 // same way, and then the height slider is instant too. Every result equals carve() exactly
 // (see the "order matches carve" tests).
+//
+// The UI thread never waits for background work: a computation that is no longer needed is
+// told to stop and moved to a "retiring" list, which is emptied as those threads finish.
 
 #include "seam/carver.hpp"
 #include "seam/image.hpp"
 #include "seam/interactive.hpp" // outputNameForSize
 #include "seam/seam_order.hpp"
+#include "seam/visualise.hpp" // saveImageCreatingFolder
 
 #include <GLFW/glfw3.h> // also includes the OpenGL header
 #include <imgui.h>
@@ -30,6 +34,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -71,6 +76,9 @@ BackgroundOrder startOrder(const seam::Image& img, seam::Method method, bool hor
     auto total = task.total;
     auto cancel = task.cancel;
     task.result = std::async(std::launch::async, [img, method, horizontal, done, total, cancel]() {
+        if (*cancel) {
+            throw Cancelled(); // cancelled before it even started
+        }
         const seam::ProgressCallback progress = [done, total, cancel](int d, int t) {
             *done = d;
             *total = t;
@@ -84,14 +92,40 @@ BackgroundOrder startOrder(const seam::Image& img, seam::Method method, bool hor
     return task;
 }
 
-// Stops a task (if running) and waits for its thread to end.
-void stopTask(BackgroundOrder& task) {
+// Asks a task to stop and moves it to `retiring` WITHOUT waiting for it. Its thread only checks
+// the cancel flag between seams, and one seam can take a long time (graph cut), so waiting here
+// would freeze the window. Afterwards `task` is empty (not running).
+void retireTask(BackgroundOrder& task, std::vector<BackgroundOrder>& retiring) {
+    if (task.running()) {
+        *task.cancel = true;
+        retiring.push_back(std::move(task));
+    }
+    task = BackgroundOrder{};
+}
+
+// Removes the retired tasks whose threads have finished. Called once per frame; never waits.
+void collectRetired(std::vector<BackgroundOrder>& retiring) {
+    for (std::size_t i = 0; i < retiring.size();) {
+        if (retiring[i].finished()) {
+            try {
+                retiring[i].result.get();
+            } catch (...) {
+                // Cancelled (or failed): the result is not needed any more.
+            }
+            retiring.erase(retiring.begin() + static_cast<std::ptrdiff_t>(i));
+        } else {
+            ++i;
+        }
+    }
+}
+
+// Waits for a task to end (only used when the program closes, after the window is gone).
+void waitFor(BackgroundOrder& task) {
     if (task.running()) {
         *task.cancel = true;
         try {
             task.result.get();
         } catch (...) {
-            // Cancelled (or failed): the result is not needed any more.
         }
     }
 }
@@ -167,12 +201,13 @@ int main(int argc, char** argv) {
     seam::SeamOrder vertical;     // ready when verticalReady
     bool verticalReady = false;
     BackgroundOrder horizontalTask;
+    std::vector<BackgroundOrder> retiring; // cancelled tasks whose threads are still ending
     seam::SeamOrder horizontal;   // valid for width horizontalWidth
     int horizontalWidth = -1;
     std::string error;            // e.g. "Greedy seam finder is not implemented yet"
 
-    int width = original.width;   // slider values
-    int height = original.height;
+    int width = original.width;   // slider values (what the user asked for)
+    int height = original.height; // kept while the height order for a new width is prepared
     bool showSeams = false;
     seam::Image narrow = original; // the image at the current width (full height)
     int narrowWidth = original.width;
@@ -184,6 +219,7 @@ int main(int argc, char** argv) {
         glfwPollEvents();
 
         // ---- collect finished background work
+        collectRetired(retiring);
         if (verticalTask.finished()) {
             try {
                 vertical = verticalTask.result.get();
@@ -218,8 +254,8 @@ int main(int argc, char** argv) {
         // Method: changing it throws away both orders and starts again.
         if (ImGui::Combo("Method", &methodIndex, [](void*, int i) { return kMethods[i].label; }, nullptr,
                          static_cast<int>(std::size(kMethods)))) {
-            stopTask(verticalTask);
-            stopTask(horizontalTask);
+            retireTask(verticalTask, retiring);
+            retireTask(horizontalTask, retiring);
             verticalTask = startOrder(original, kMethods[methodIndex].method, false);
             verticalReady = false;
             horizontalWidth = -1;
@@ -242,11 +278,9 @@ int main(int argc, char** argv) {
         // Height slider: usable once the horizontal order for THIS width is ready.
         const bool heightReady = verticalReady && horizontalWidth == width;
         if (verticalReady && !heightReady && error.empty()) {
+            // The chosen height is kept and applied as soon as the order for this width is ready.
             ImGui::ProgressBar(horizontalTask.running() ? horizontalTask.fraction() : 0.0f, ImVec2(-1, 0),
                                "Preparing height slider...");
-        }
-        if (!heightReady) {
-            height = original.height; // full height until the order for this width exists
         }
         ImGui::BeginDisabled(!heightReady);
         ImGui::SliderInt("Height", &height, 1, original.height);
@@ -262,7 +296,7 @@ int main(int argc, char** argv) {
         if (ImGui::Button("Save")) {
             try {
                 const std::string path = seam::outputNameForSize(outputPath, result.width, result.height);
-                seam::saveImage(result, path);
+                seam::saveImageCreatingFolder(result, path); // folder may not exist yet
                 saveMessage = "Saved " + path;
             } catch (const std::exception& e) {
                 saveMessage = std::string("Error: ") + e.what();
@@ -291,7 +325,7 @@ int main(int argc, char** argv) {
         // (Only one runs at a time; a stale one is cancelled first.)
         if (verticalReady && !draggingWidth && horizontalWidth != width && error.empty()) {
             if (horizontalTask.running() && horizontalTask.forWidth != width) {
-                stopTask(horizontalTask);
+                retireTask(horizontalTask, retiring); // stale width: stop it, but don't wait
             }
             if (!horizontalTask.running()) {
                 horizontalTask = startOrder(narrow, kMethods[methodIndex].method, true);
@@ -346,14 +380,18 @@ int main(int argc, char** argv) {
         glfwSwapBuffers(window);
     }
 
-    // ---- clean up: stop background threads before the data they use goes away
-    stopTask(verticalTask);
-    stopTask(horizontalTask);
+    // ---- clean up. Close the window first, so it disappears straight away, then let any
+    // background threads finish their current seam (they have been told to stop).
     glDeleteTextures(1, &texture);
     ImGui_ImplOpenGL2_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
+    waitFor(verticalTask);
+    waitFor(horizontalTask);
+    for (BackgroundOrder& task : retiring) {
+        waitFor(task);
+    }
     return 0;
 }

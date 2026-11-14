@@ -1,5 +1,6 @@
 #include "seam/seam_order.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace seam {
@@ -34,23 +35,40 @@ void checkTarget(const SeamOrder& order, int imgWidth, int imgHeight, int target
 
 SeamOrder computeVerticalSeamOrder(const Image& img, int minWidth, Method method, int threads,
                                    const ProgressCallback& progress) {
+    if (minWidth < 1 || minWidth > img.width) {
+        throw std::invalid_argument("computeVerticalSeamOrder: minWidth must be between 1 and the image width");
+    }
+    const int width = img.width; // original width = row stride of `column` below
     SeamOrder order;
-    order.width = img.width;
+    order.width = width;
     order.height = img.height;
-    order.seamCount = img.width - minWidth;
-    order.step.assign(static_cast<std::size_t>(img.width) * img.height, 0); // 0 = never removed
+    order.seamCount = width - minWidth;
+    order.step.assign(static_cast<std::size_t>(width) * img.height, 0); // 0 = never removed
 
-    // SeamTracker (Step 3) knows the original position of every pixel of the shrinking image,
-    // so each seam pixel can be written into the order map at its original position.
-    SeamTracker tracker(img);
+    // column[row * width + c] = original column of the pixel now at column c of that row.
+    // Only the first currentWidth entries of each row are in use. Removing a seam pixel shifts
+    // the rest of that row left by one, in place (same idea as SeamTracker, but without a copy
+    // of the image or a new grid per seam: rows never change for vertical seams).
+    std::vector<int> column(order.step.size());
+    for (int row = 0; row < img.height; ++row) {
+        for (int c = 0; c < width; ++c) {
+            column[static_cast<std::size_t>(row) * width + c] = c;
+        }
+    }
+
     int seamsDone = 0;
+    int currentWidth = width;
     carve(img, minWidth, img.height, method,
-          [&](const Image& current, const Seam& s, Orientation o) {
+          [&](const Image& current, const Seam& s, Orientation) {
               ++seamsDone;
               for (int row = 0; row < current.height; ++row) {
-                  order.step[static_cast<std::size_t>(tracker.originalIndex(row, s[row]))] = seamsDone;
+                  int* rowStart = &column[static_cast<std::size_t>(row) * width];
+                  const int originalCol = rowStart[s[row]];
+                  order.step[static_cast<std::size_t>(row) * width + originalCol] = seamsDone;
+                  // Shift the entries right of the seam one place left.
+                  std::copy(rowStart + s[row] + 1, rowStart + currentWidth, rowStart + s[row]);
               }
-              tracker.record(current, s, o);
+              --currentWidth;
               if (progress) {
                   progress(seamsDone, order.seamCount);
               }
@@ -76,11 +94,7 @@ Image applyVerticalOrder(const Image& img, const SeamOrder& order, int targetWid
             if (s != 0 && s <= removed) {
                 continue; // removed by one of the first `removed` seams
             }
-            const std::uint8_t* src = img.pixel(row, col);
-            std::uint8_t* dst = out.pixel(row, outCol);
-            dst[0] = src[0];
-            dst[1] = src[1];
-            dst[2] = src[2];
+            copyPixel(img, row, col, out, row, outCol);
             ++outCol;
         }
     }
@@ -104,28 +118,17 @@ Image paintRemovedPixels(const Image& original, const SeamOrder& vertical, int t
         int narrowCol = 0; // column of this pixel in the image after the vertical seams
         for (int col = 0; col < original.width; ++col) {
             const int v = vertical.at(row, col);
-            const bool removedByVertical = v != 0 && v <= removedCols;
-            Colour paint{};
-            bool painted = false;
-            if (removedByVertical) {
-                paint = kRed;
-                painted = true;
-            } else {
-                // Kept by the vertical seams, so it is pixel (row, narrowCol) of the narrower
-                // image; check whether a horizontal seam then removed it.
-                const int h = horizontal.at(row, narrowCol);
-                if (h != 0 && h <= removedRows) {
-                    paint = kBlue;
-                    painted = true;
-                }
-                ++narrowCol;
+            if (v != 0 && v <= removedCols) {
+                paintPixel(out, row, col, kRed); // removed by a vertical seam
+                continue;
             }
-            if (painted) {
-                std::uint8_t* p = out.pixel(row, col);
-                p[0] = paint.r;
-                p[1] = paint.g;
-                p[2] = paint.b;
+            // Kept by the vertical seams, so it is pixel (row, narrowCol) of the narrower
+            // image; check whether a horizontal seam then removed it.
+            const int h = horizontal.at(row, narrowCol);
+            if (h != 0 && h <= removedRows) {
+                paintPixel(out, row, col, kBlue);
             }
+            ++narrowCol;
         }
     }
     return out;

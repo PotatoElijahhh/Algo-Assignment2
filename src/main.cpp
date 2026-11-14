@@ -117,6 +117,11 @@ int main(int argc, char** argv) {
         const seam::Image input = seam::loadImage(inputPath);
 
         if (interactive) {
+            // Tell the user about options that interactive mode does not use, instead of
+            // silently ignoring them.
+            if (targetWidth >= 0 || targetHeight >= 0) {
+                std::cout << "Note: --width and --height are not used in interactive mode; type the sizes below\n";
+            }
             if (!framesFolder.empty() || !overlayPath.empty()) {
                 std::cout << "Note: --frames and --overlay are not used in interactive mode\n";
             }
@@ -128,6 +133,10 @@ int main(int argc, char** argv) {
         }
         if (targetHeight < 0) {
             targetHeight = input.height;
+        }
+
+        if (framesFolder.empty() && frameEvery != 1) {
+            std::cout << "Note: --frame-every only has an effect together with --frames\n";
         }
 
         // Visualisation: --frames and --overlay each need to see every seam before it is
@@ -161,7 +170,7 @@ int main(int argc, char** argv) {
         const auto end = std::chrono::steady_clock::now();
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-        seam::saveImage(output, outputPath);
+        seam::saveImageCreatingFolder(output, outputPath); // creates e.g. results/ if needed
         std::cout << "Carved " << input.width << "x" << input.height << " -> " << output.width << "x"
                   << output.height << " using " << methodName << " (" << threads << " thread"
                   << (threads == 1 ? "" : "s") << ") in " << ms << " ms";
@@ -177,7 +186,7 @@ int main(int argc, char** argv) {
                       << " seams to " << framesFolder << "\n";
         }
         if (tracker) {
-            seam::saveImage(tracker->overlay(), overlayPath);
+            seam::saveImageCreatingFolder(tracker->overlay(), overlayPath); // folder may not exist yet
             std::cout << "Saved overlay of " << tracker->removedCount() << " removed pixels to "
                       << overlayPath << "\n";
         }

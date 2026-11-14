@@ -34,6 +34,7 @@ using ProgressCallback = std::function<void(int done, int total)>;
 
 // Carves `img` with vertical seams down to minWidth and records the order.
 // Time O((W - minWidth) * W * H), the same as one carve() to that width.
+// Throws std::invalid_argument if minWidth is not between 1 and the image width.
 SeamOrder computeVerticalSeamOrder(const Image& img, int minWidth, Method method, int threads = 1,
                                    const ProgressCallback& progress = {});
 

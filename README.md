@@ -105,7 +105,8 @@ seamcarve <input> <output> [--width W] [--height H] [--method M] [--threads N]
 | `greedy` | Greedy row-by-row choice |
 | `graphcut` | Minimum cut / max-flow |
 
-The program only **shrinks** images, and the output folder must already exist.
+The program only **shrinks** images. The output folder (for example `results/`) is created if it
+does not exist yet.
 
 ### Example (Windows, Developer PowerShell)
 

@@ -1,5 +1,6 @@
 #include "seam/visualise.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
@@ -8,17 +9,36 @@
 
 namespace seam {
 
-namespace {
-
-// Sets one pixel to the given colour.
-void setPixel(Image& img, int row, int col, Colour colour) {
+void paintPixel(Image& img, int row, int col, Colour colour) {
     std::uint8_t* p = img.pixel(row, col);
     p[0] = colour.r;
     p[1] = colour.g;
     p[2] = colour.b;
 }
 
-} // namespace
+void copyPixel(const Image& from, int fromRow, int fromCol, Image& to, int toRow, int toCol) {
+    const std::uint8_t* src = from.pixel(fromRow, fromCol);
+    std::uint8_t* dst = to.pixel(toRow, toCol);
+    dst[0] = src[0];
+    dst[1] = src[1];
+    dst[2] = src[2];
+}
+
+void saveImageCreatingFolder(const Image& img, const std::string& path) {
+    const std::filesystem::path folder = std::filesystem::path(path).parent_path();
+    if (!folder.empty()) {
+        std::filesystem::create_directories(folder); // does nothing if it already exists
+    }
+    saveImage(img, path);
+}
+
+std::string frameFileName(int number, int largestNumber, const std::string& suffix) {
+    // Number of digits needed for largestNumber (e.g. 12000 -> 5), but at least 4.
+    const int digits = std::max(4, static_cast<int>(std::to_string(largestNumber).size()));
+    std::ostringstream name;
+    name << "frame_" << std::setw(digits) << std::setfill('0') << number << "_" << suffix << ".png";
+    return name.str();
+}
 
 void paintSeam(Image& img, const Seam& seam, Orientation orientation, Colour colour) {
     if (orientation == Orientation::Vertical) {
@@ -27,7 +47,7 @@ void paintSeam(Image& img, const Seam& seam, Orientation orientation, Colour col
             throw std::invalid_argument("paintSeam: vertical seam does not fit the image");
         }
         for (int row = 0; row < img.height; ++row) {
-            setPixel(img, row, seam[row], colour);
+            paintPixel(img, row, seam[row], colour);
         }
     } else {
         // A horizontal seam is a vertical seam of the transposed image, so the same
@@ -37,7 +57,7 @@ void paintSeam(Image& img, const Seam& seam, Orientation orientation, Colour col
             throw std::invalid_argument("paintSeam: horizontal seam does not fit the image");
         }
         for (int col = 0; col < img.width; ++col) {
-            setPixel(img, seam[col], col, colour);
+            paintPixel(img, seam[col], col, colour);
         }
     }
 }
@@ -50,15 +70,10 @@ Image padToSize(const Image& img, int width, int height, Colour background) {
     for (int row = 0; row < height; ++row) {
         for (int col = 0; col < width; ++col) {
             if (row < img.height && col < img.width) {
-                // Inside the image: copy its pixel.
-                const std::uint8_t* src = img.pixel(row, col);
-                std::uint8_t* dst = canvas.pixel(row, col);
-                dst[0] = src[0];
-                dst[1] = src[1];
-                dst[2] = src[2];
+                copyPixel(img, row, col, canvas, row, col); // inside the image
             } else {
                 // Area the carving has already removed: fill with the background.
-                setPixel(canvas, row, col, background);
+                paintPixel(canvas, row, col, background);
             }
         }
     }
@@ -81,11 +96,11 @@ FrameRecorder::FrameRecorder(const std::string& folder, int every) : folder_(fol
 }
 
 std::string FrameRecorder::framePath(int number, const std::string& suffix) const {
-    // e.g. number 7, suffix "v"  ->  "<folder>/frame_0007_v.png"
-    // Zero-padding makes the files sort in the right order in File Explorer.
-    std::ostringstream name;
-    name << "frame_" << std::setw(4) << std::setfill('0') << number << "_" << suffix << ".png";
-    return (std::filesystem::path(folder_) / name.str()).string();
+    // A carve removes at most (width - 1) + (height - 1) seams, and the final frame is numbered
+    // one past the last seam, so no frame number reaches width + height.
+    // e.g. number 7, suffix "v", 640x364 image  ->  "<folder>/frame_0007_v.png"
+    const std::string name = frameFileName(number, canvasWidth_ + canvasHeight_, suffix);
+    return (std::filesystem::path(folder_) / name).string();
 }
 
 void FrameRecorder::record(const Image& current, const Seam& seam, Orientation orientation) {
@@ -203,9 +218,9 @@ Image SeamTracker::overlay() const {
         for (int col = 0; col < out.width; ++col) {
             const Status s = status_[static_cast<std::size_t>(row) * out.width + col];
             if (s == Status::RemovedVertical) {
-                setPixel(out, row, col, kRed);
+                paintPixel(out, row, col, kRed);
             } else if (s == Status::RemovedHorizontal) {
-                setPixel(out, row, col, kBlue);
+                paintPixel(out, row, col, kBlue);
             }
         }
     }
