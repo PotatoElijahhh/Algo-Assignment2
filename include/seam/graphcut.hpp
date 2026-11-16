@@ -71,7 +71,7 @@ namespace seam {
         }
     };
 
-    // ---- Julius: graph construction + max-flow (src/graphcut_flow.cpp) (remove when implemented)
+    // ---- graph construction + max-flow (src/graphcut_flow.cpp)
 
     /*!***********************************************************************
     \brief
@@ -95,8 +95,6 @@ namespace seam {
         Total flow, which equals the min cut capacity
     *************************************************************************/
     double maxFlow(FlowGraph& g);
-
-    // end (remove when implemented)
 
     /*!***********************************************************************
     \brief
