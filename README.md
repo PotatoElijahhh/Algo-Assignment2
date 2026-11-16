@@ -10,7 +10,7 @@ The seam is found in three ways so they can be compared:
 |---|---|---|
 | Dynamic programming | `src/seam_dp.cpp` | Done |
 | Greedy (row-by-row choice) | `src/seam_greedy.cpp` | In progress |
-| Graph cut (min-cut / max-flow) | `src/graphcut_flow.cpp` (graph + max-flow), `src/seam_graphcut.cpp` (seam extraction) | Seam extraction done, graph + max-flow in progress |
+| Graph cut (min-cut / max-flow) | `src/graphcut_flow.cpp` (graph + max-flow), `src/seam_graphcut.cpp` (seam extraction) | Done |
 
 It also includes two **improvements** to the dynamic-programming version (assignment item 5d),
 both of which give exactly the same result as the original:
@@ -344,9 +344,8 @@ If a check fails, the line is marked `[FAIL]` and the file and line number of th
 | graph cut: special shapes | Two columns, one row, all-zero and all-equal energies |
 | graph cut: carve reaches target size / keeps high-energy object | Carving with `--method graphcut` works end to end |
 
-The end-to-end graph cut tests need `buildSeamGraph` and `maxFlow` from `src/graphcut_flow.cpp`.
-Until those are implemented they print `[SKIP]` instead of failing, and run automatically once
-they are.
+The end-to-end graph cut tests use `buildSeamGraph` and `maxFlow` from `src/graphcut_flow.cpp`.
+They print `[SKIP]` instead of failing if those functions are missing.
 
 ### Graph cut: how the two parts fit together
 
@@ -355,7 +354,7 @@ they are.
 reverse of `edges[e]`, and `cap` holds the residual capacity).
 
 1. `buildSeamGraph(energy)` builds the graph from the assignment (item 4).
-2. `maxFlow(g)` runs max-flow and leaves the residual capacities in `g`.
+2. `maxFlow(g)` runs max-flow (Edmonds-Karp, `O(V * E^2)`) and leaves the residual capacities in `g`.
 3. `extractSeam(g)` runs a BFS from the source in the residual graph to find the source side
    `S` of the minimum cut, then takes the rightmost pixel of `S` in each row. It checks that the
    result is a valid seam and throws `std::logic_error` if the graph or flow is wrong.
