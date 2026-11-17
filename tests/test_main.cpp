@@ -265,6 +265,185 @@ void testCallbackSeesEverySeam() {
     CHECK(g_seamsValid);
 }
 
+// ---------------------------------------------------------------- greedy seam (item 3)
+
+void testGreedyFindsKnownSeam() {
+    // Each row has one obvious cheap pixel next to the previous one, so the local choice
+    // is also the best overall choice: greedy follows the 1s, columns 1, 2, 1, 0 (cost 4).
+    const Matrix e = makeMatrix(4, 4, {
+        5, 1, 9, 9,
+        9, 8, 1, 9,
+        9, 1, 9, 9,
+        1, 9, 9, 9,
+    });
+    const Seam s = seam::findVerticalSeamGreedy(e);
+    CHECK((s == Seam{1, 2, 1, 0}));
+    CHECK(seam::seamCost(e, s) == 4.0);
+    CHECK(s == seam::findVerticalSeamDP(e)); // here greedy happens to find the optimum
+}
+
+void testGreedyCanBeWorseThanDp() {
+    // Greedy takes the 1 in the top row, then is stuck with 9 + 9 below: cost 19.
+    // DP sees the whole grid and takes 2 -> 1 -> 1: cost 4.
+    // (The seam version of the $1/$7/$10 coin example from L05.)
+    const Matrix e = makeMatrix(3, 3, {
+        1, 2, 9,
+        9, 9, 1,
+        9, 9, 1,
+    });
+    const Seam greedy = seam::findVerticalSeamGreedy(e);
+    const Seam dp = seam::findVerticalSeamDP(e);
+    CHECK((greedy == Seam{0, 0, 0}));
+    CHECK(seam::seamCost(e, greedy) == 19.0);
+    CHECK((dp == Seam{1, 2, 2}));
+    CHECK(seam::seamCost(e, dp) == 4.0);
+}
+
+void testGreedyHasNoQualityBound() {
+    // Top row: 0 1 M. Every row below: M M 0.
+    // Greedy starts at the 0, then can only reach M's: cost (rows - 1) * M.
+    // DP starts at the 1 and steps right onto the column of 0s: cost 1.
+    // The gap grows with the image height, so greedy can be arbitrarily worse than DP.
+    const double big = 100.0;
+    for (int rows = 2; rows <= 20; ++rows) {
+        Matrix e(rows, 3, 0.0);
+        e(0, 0) = 0;
+        e(0, 1) = 1;
+        e(0, 2) = big;
+        for (int row = 1; row < rows; ++row) {
+            e(row, 0) = big;
+            e(row, 1) = big;
+            e(row, 2) = 0;
+        }
+        const Seam greedy = seam::findVerticalSeamGreedy(e);
+        CHECK(seam::isValidSeam(greedy, rows, 3));
+        CHECK(seam::seamCost(e, greedy) == (rows - 1) * big);
+        CHECK(seam::seamCost(e, seam::findVerticalSeamDP(e)) == 1.0);
+    }
+}
+
+void testGreedyTieBreak() {
+    // All energies equal: leftmost start, then straight down every time.
+    const Matrix flat(3, 4, 5.0);
+    CHECK((seam::findVerticalSeamGreedy(flat) == Seam{0, 0, 0}));
+
+    // Left and right are equally cheap (and cheaper than straight down): left wins.
+    const Matrix leftRight = makeMatrix(2, 3, {
+        5, 0, 5,
+        1, 9, 1,
+    });
+    CHECK((seam::findVerticalSeamGreedy(leftRight) == Seam{1, 0}));
+
+    // Straight down ties with a neighbour: straight down wins.
+    const Matrix downTie = makeMatrix(2, 3, {
+        5, 0, 5,
+        9, 2, 2,
+    });
+    CHECK((seam::findVerticalSeamGreedy(downTie) == Seam{1, 1}));
+}
+
+void testGreedyStaysInsideEdges() {
+    // Cheap path down the last column: col + 1 must never go past the right edge.
+    const Matrix right = makeMatrix(3, 3, {
+        9, 9, 0,
+        9, 9, 0,
+        9, 9, 0,
+    });
+    CHECK((seam::findVerticalSeamGreedy(right) == Seam{2, 2, 2}));
+
+    // Cheap path down column 0: col - 1 must never go below 0.
+    const Matrix left = makeMatrix(3, 3, {
+        0, 9, 9,
+        0, 9, 9,
+        0, 9, 9,
+    });
+    CHECK((seam::findVerticalSeamGreedy(left) == Seam{0, 0, 0}));
+}
+
+void testGreedySmallShapes() {
+    CHECK((seam::findVerticalSeamGreedy(makeMatrix(1, 1, {7})) == Seam{0}));          // 1 x 1
+    CHECK((seam::findVerticalSeamGreedy(makeMatrix(3, 1, {4, 2, 7})) == Seam{0, 0, 0})); // 1 column
+    CHECK((seam::findVerticalSeamGreedy(makeMatrix(1, 4, {3, 1, 2, 5})) == Seam{1}));  // 1 row
+    // 2 columns: the seam can only switch between the two columns.
+    const Matrix twoCols = makeMatrix(3, 2, {
+        1, 2,
+        5, 3,
+        4, 6,
+    });
+    CHECK((seam::findVerticalSeamGreedy(twoCols) == Seam{0, 1, 0}));
+}
+
+void testGreedyRejectsEmpty() {
+    bool threw = false;
+    try {
+        seam::findVerticalSeamGreedy(Matrix());
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+void testGreedyNeverBeatsOptimum() {
+    // On thousands of random grids the greedy seam must be valid, and its cost can never be
+    // lower than the optimal cost (checked against both DP and brute force).
+    std::mt19937 rng(2024);
+    int greedyWorse = 0;
+    for (int trial = 0; trial < 2000; ++trial) {
+        const int rows = 1 + static_cast<int>(rng() % 7);
+        const int cols = 1 + static_cast<int>(rng() % 6);
+        const Matrix e = randomMatrix(rng, rows, cols);
+        const Seam s = seam::findVerticalSeamGreedy(e);
+        CHECK(seam::isValidSeam(s, rows, cols));
+        const double greedyCost = seam::seamCost(e, s);
+        const double best = bruteForceMinSeamCost(e);
+        CHECK(greedyCost >= best);
+        CHECK(seam::seamCost(e, seam::findVerticalSeamDP(e)) == best);
+        if (greedyCost > best) {
+            ++greedyWorse;
+        }
+    }
+    CHECK(greedyWorse > 0); // greedy really is sub-optimal on some of these grids
+}
+
+void testGreedyValidOnLargeSobelEnergy() {
+    // Real energy maps (Sobel on random images), including tall and wide ones.
+    std::mt19937 rng(77);
+    const int sizes[][2] = {{60, 40}, {40, 60}, {200, 3}, {3, 200}};
+    for (const auto& size : sizes) {
+        const Image img = randomImage(rng, size[0], size[1]);
+        const Matrix e = seam::computeEnergy(img);
+        const Seam s = seam::findVerticalSeamGreedy(e);
+        CHECK(seam::isValidSeam(s, e.rows, e.cols));
+        CHECK(seam::seamCost(e, s) >= seam::seamCost(e, seam::findVerticalSeamDP(e)));
+    }
+}
+
+// Counters filled in by countGreedySeams() during testCarveWithGreedy.
+int g_greedyVertical = 0;
+int g_greedyHorizontal = 0;
+bool g_greedySeamsValid = true;
+
+void countGreedySeams(const Image& current, const Seam& s, seam::Orientation orientation) {
+    if (orientation == seam::Orientation::Vertical) {
+        ++g_greedyVertical;
+        g_greedySeamsValid = g_greedySeamsValid && seam::isValidSeam(s, current.height, current.width);
+    } else {
+        ++g_greedyHorizontal;
+        g_greedySeamsValid = g_greedySeamsValid && seam::isValidSeam(s, current.width, current.height);
+    }
+}
+
+void testCarveWithGreedy() {
+    // Both directions: vertical seams directly, horizontal seams through the transpose.
+    std::mt19937 rng(31);
+    const Image img = randomImage(rng, 20, 15);
+    const Image out = seam::carve(img, 14, 10, seam::Method::Greedy, countGreedySeams);
+    CHECK(out.width == 14 && out.height == 10);
+    CHECK(g_greedyVertical == 6);   // 20 -> 14 columns
+    CHECK(g_greedyHorizontal == 5); // 15 -> 10 rows
+    CHECK(g_greedySeamsValid);
+}
+
 // ---------------------------------------------------------------- improvements (item 5d)
 // The improved versions must give exactly the same answers as the originals.
 
@@ -1106,6 +1285,16 @@ int main() {
         {"carve keeps high-energy object", testCarveKeepsHighEnergyObject},
         {"carve rejects invalid targets", testCarveRejectsInvalidTargets},
         {"callback sees every seam", testCallbackSeesEverySeam},
+        {"greedy finds known seam", testGreedyFindsKnownSeam},
+        {"greedy can be worse than DP", testGreedyCanBeWorseThanDp},
+        {"greedy has no quality bound", testGreedyHasNoQualityBound},
+        {"greedy tie break", testGreedyTieBreak},
+        {"greedy stays inside edges", testGreedyStaysInsideEdges},
+        {"greedy small shapes", testGreedySmallShapes},
+        {"greedy rejects empty energy map", testGreedyRejectsEmpty},
+        {"greedy never beats the optimum", testGreedyNeverBeatsOptimum},
+        {"greedy valid on large Sobel energy", testGreedyValidOnLargeSobelEnergy},
+        {"greedy carve reaches target size", testCarveWithGreedy},
         {"compact DP matches original DP", testCompactDpMatchesOriginalDp},
         {"parallel DP matches original DP", testParallelDpMatchesOriginalDp},
         {"parallel energy matches serial", testParallelEnergyMatchesSerial},

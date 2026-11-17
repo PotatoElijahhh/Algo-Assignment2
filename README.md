@@ -9,7 +9,7 @@ The seam is found in three ways so they can be compared:
 | Method | File | Status |
 |---|---|---|
 | Dynamic programming | `src/seam_dp.cpp` | Done |
-| Greedy (row-by-row choice) | `src/seam_greedy.cpp` | In progress |
+| Greedy (row-by-row choice) | `src/seam_greedy.cpp` | Done |
 | Graph cut (min-cut / max-flow) | `src/graphcut_flow.cpp` (graph + max-flow), `src/seam_graphcut.cpp` (seam extraction) | Done |
 
 It also includes two **improvements** to the dynamic-programming version (assignment item 5d),
@@ -218,10 +218,10 @@ after step W − w", which is O(W·H) with no energy map or DP. When the width s
 the same is done for horizontal seams at that width, and the height slider becomes instant too.
 The tests check that this gives exactly the same pixels as `carve()` for every size.
 
-## Measuring the improvements (`seambench`)
+## Measuring the improvements and comparing methods (`seambench`)
 
 `seambench` measures the two DP improvements and checks that they give the same results as the
-original version:
+original version. It also compares DP, greedy and graph cut on the same image:
 
 ```
 seambench <image>    [--repeat R] [--seams K] [--max-threads T] [--csv FILE]
@@ -235,15 +235,34 @@ seambench --size WxH [--repeat R] [--seams K] [--max-threads T] [--csv FILE]
 | `--seams K` | Vertical seams to remove in section 3 | `50` |
 | `--max-threads T` | Most threads to try | all available |
 | `--csv FILE` | Also save every result to a CSV file (for charts in Excel) | off |
+| `--graphcut-max-pixels N` | Largest image (width × height) on which section 4 runs graph cut, because Edmonds–Karp is slow | `20000` |
 
-It prints three tables:
+It prints four tables:
 
 1. **Energy map:** time with 1, 2, 4, ... threads, and the speed-up over 1 thread.
 2. **One seam:** the original DP, the memory-light DP and the multithreaded DP, with time,
    speed-up and the memory used by the DP tables.
 3. **Full carve:** time to remove K seams with each configuration.
+4. **Method comparison** (DP vs greedy vs graph cut):
+   - **4a, one seam:** time, speed-up over DP, the seam's total energy (`seam cost`, lower is
+     better), `cost / DP` and whether the seam is optimal (as cheap as the DP seam).
+   - **4b, full carve:** time to remove K seams with each method.
 
-The last column, `same result`, must say `yes` on every line.
+In tables 1–3 the last column, `same result`, must say `yes` on every line. In table 4a, DP is
+always optimal, and greedy is usually not, because it only looks one row ahead.
+
+Example results (random test images, Release build, 50 seams):
+
+| Image | One seam: DP | One seam: greedy | Greedy seam cost / DP | 50 seams: DP | 50 seams: greedy |
+|---|---|---|---|---|---|
+| 100×100 | 0.137 ms | 0.002 ms (78×) | 1.21 | 21 ms | 18 ms (1.2×) |
+| 200×200 | 0.285 ms | 0.003 ms (109×) | 1.27 | 69 ms | 50 ms (1.4×) |
+| 400×300 | 1.450 ms | 0.004 ms (378×) | 1.40 | 208 ms | 145 ms (1.4×) |
+| 800×600 | 4.942 ms | 0.010 ms (490×) | 1.26 | 955 ms | 785 ms (1.2×) |
+
+Greedy finds one seam hundreds of times faster (Θ(W + H) instead of Θ(W·H)), but a full carve is
+only about 1.2–1.4× faster. Every step still recomputes the Θ(W·H) energy map and copies the image
+to remove the seam, and that work is the same for both methods.
 
 Example (Windows):
 
@@ -307,6 +326,16 @@ If a check fails, the line is marked `[FAIL]` and the file and line number of th
 | carve keeps high-energy object | Seams go around a detailed object instead of through it |
 | carve rejects invalid targets | Sizes of 0 or larger than the image throw an error |
 | callback sees every seam | Every removed seam (vertical and horizontal) is reported, for visualisation |
+| greedy finds known seam | On a grid where each local choice is also the best overall, greedy follows the expected seam (and matches DP) |
+| greedy can be worse than DP | On `1 2 9 / 9 9 1 / 9 9 1` greedy takes the 1 first and pays 19; DP pays 4 |
+| greedy has no quality bound | On a family of grids, greedy's cost grows with the height while DP's stays 1, so greedy can be arbitrarily worse |
+| greedy tie break | Equal energies: leftmost start, then straight down before left before right |
+| greedy stays inside edges | Cheap paths down column 0 and the last column never step outside the image |
+| greedy small shapes | 1x1, one column, one row and two columns |
+| greedy rejects empty energy map | An empty energy map throws `std::invalid_argument` |
+| greedy never beats the optimum | On 2000 random grids the greedy seam is valid and never cheaper than brute force (and is more expensive on some) |
+| greedy valid on large Sobel energy | Valid seams, never cheaper than DP, on real Sobel energy maps including very tall and very wide ones |
+| greedy carve reaches target size | Carving with `--method greedy` works in both directions, and every reported seam is valid |
 | compact DP matches original DP | The memory-light DP returns exactly the same seam as the original on 300 random grids, including ties |
 | parallel DP matches original DP | The multithreaded DP (4 threads) returns exactly the same seam as the original |
 | parallel energy matches serial | The multithreaded energy map is exactly equal to the single-threaded one |
